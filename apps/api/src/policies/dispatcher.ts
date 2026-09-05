@@ -89,8 +89,13 @@ export class PolicyDispatcher {
       return this.deny(snapshot, toolFqName, "FORBIDDEN", "Sesi tidak cocok dengan connector owner.");
     }
 
-    // 1. live mode re-check (CAS race: OFF from another tab)
-    const live = await this.deps.modeSource.getMode(snapshot.userId, snapshot.connectionId);
+    // 1. live mode re-check (CAS race: OFF from another tab).
+    //    A no-router run ("none") is pinned to read-only + version 0: only
+    //    docs tools can pass, and no connector permission row exists to race.
+    const live =
+      snapshot.connectionId === "none"
+        ? { mode: "read-only" as const, version: 0 }
+        : await this.deps.modeSource.getMode(snapshot.userId, snapshot.connectionId);
     if (live.mode !== snapshot.mode || live.version !== snapshot.modeVersion) {
       return this.deny(snapshot, toolFqName, "POLICY_CHANGED", "Mode connector berubah selama run berlangsung. Mulai ulang percakapan.");
     }

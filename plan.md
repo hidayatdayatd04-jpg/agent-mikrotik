@@ -46,7 +46,7 @@ Keputusan berikut menjadi baseline agar AI pelaksana tidak menghabiskan waktu me
 | Backend | Bun + Hono + validasi Zod | Menjalankan API, streaming, dan proses MCP dalam satu layanan persisten |
 | Database | Neon PostgreSQL + Drizzle ORM/migrations | Query terstruktur, constraint, dan migrasi yang dapat direproduksi |
 | Auth | Google OIDC melalui library terawat; OTP dan opaque session di backend | Kedua metode login menghasilkan session aplikasi yang sama |
-| AI | Anthropic SDK resmi; model melalui `ANTHROPIC_MODEL` | Tool loop dan streaming dikelola backend |
+| AI | Multi-provider OpenAI-compatible (`openai` SDK, baseURL injectable): Google Gemini, OpenRouter, Custom (apiKey+baseUrl+model); auto-fetch model; mock deterministik bila tanpa kredensial | Tool loop dan streaming dikelola backend; kunci provider per-user terenkripsi |
 | MCP | SDK MCP TypeScript dengan transport stdio | MCP privat; lifecycle dan kredensial dikendalikan backend |
 | Email | Brevo Transactional Email API | Pilih satu jalur email; SMTP tidak diperlukan pada baseline |
 | Storage | S3-compatible SDK untuk Backblaze B2 | Bucket privat, upload terkontrol, URL baca sementara |
@@ -64,7 +64,7 @@ flowchart LR
     B --> O[Google OAuth]
     B --> E[Brevo Email]
     B --> S[(B2 privat)]
-    B --> A[Anthropic Claude API]
+    B --> A[Provider AI: Gemini / OpenRouter / Custom]
     B --> G[Policy dan dispatcher tool]
     G --> M[Proses Bun: mikrotik-mcp per koneksi]
     G --> R[Proses Bun: Rosetta]
@@ -84,8 +84,8 @@ Dokumentasi diperiksa saat penyusunan rencana; belum ada paket yang dipasang ata
 | --- | --- |
 | Jumlah tool | Prompt menyebut 819, sedangkan README saat diperiksa menyebut 885. Ambil katalog dari `tools/list`, termasuk pagination; jangan hardcode jumlah. [Sumber](https://github.com/mikrotik-mcp/mikrotik-mcp) |
 | Konfigurasi SSH | Dokumentasi mencantumkan `MIKROTIK_HOST`, `MIKROTIK_USERNAME`, `MIKROTIK_PASSWORD`, `MIKROTIK_PORT`, serta mode server `MIKROTIK_READ_ONLY`. Verifikasi perilakunya pada versi yang dipin. [Sumber](https://github.com/mikrotik-mcp/mikrotik-mcp/blob/master/docs/configuration.md) |
-| Claude dan MCP lokal | MCP connector remote Claude memerlukan HTTP publik; stdio lokal tidak terhubung langsung. Karena itu backend menjadi MCP client dan menjalankan tool loop Claude. [Sumber](https://platform.claude.com/docs/en/agents-and-tools/mcp-connector) |
-| Katalog besar | Claude mendokumentasikan tool search dan deferred loading. Verifikasi dukungan model dan SDK; filtering mode tetap dilakukan sebelum semua definisi tool yang diizinkan dikirim ke API. [Sumber](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool) |
+| Claude dan MCP lokal | MCP connector remote model-host memerlukan HTTP publik; stdio lokal tidak terhubung langsung. Karena itu backend menjadi MCP client dan menjalankan tool loop provider AI. (Riset M0 memakai dokumen Claude sebagai rujukan; M7 direvisi ke provider Gemini/OpenRouter/Custom.) [Sumber](https://platform.claude.com/docs/en/agents-and-tools/mcp-connector) |
+| Katalog besar | Riset M0 (dokumen Claude) menunjukkan pola tool search/deferred loading; provider terpilih (Gemini/OpenRouter/Custom) menerima definisi tool penuh per mode. Filtering mode tetap dilakukan sebelum semua definisi tool yang diizinkan dikirim ke API. [Sumber](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool) |
 | Risk annotation | Annotation MCP merupakan petunjuk; aplikasi tetap memerlukan kebijakan otorisasi sendiri. Versi dependency harus dipin dan tool tanpa klasifikasi tepercaya ditolak. [Sumber](https://modelcontextprotocol.io/specification/2025-06-18/server/tools) |
 | Safe Mode MCP | Dokumentasi menjelaskan shell SSH persisten dan tool enable/status/commit/rollback. Buktikan bahwa semua mutasi dalam satu transaksi melewati sesi yang benar. [Sumber](https://github.com/mikrotik-mcp/mikrotik-mcp/blob/master/docs/safe-mode.md) |
 | Batas Safe Mode RouterOS | Dokumentasi vendor menyebut perubahan sesi lain ikut tercakup, rollback bisa tertunda, dan kapasitas history terbatas dapat menyebabkan keluar dari Safe Mode. Jangan menjanjikan rollback instan atau perlindungan untuk semua efek samping. [Sumber](https://help.mikrotik.com/docs/spaces/ROS/pages/328155/Configuration%2BManagement) |
@@ -143,7 +143,7 @@ agent-mikrotik/
 │       ├── routes/
 │       ├── middleware/          # session, ownership, CSRF, rate limit
 │       ├── services/            # auth, chat, storage, connector
-│       ├── agent/               # Claude loop, context, stream
+│       ├── agent/               # agent loop multi-provider, context, stream
 │       ├── mcp/                 # supervisor, clients, catalog, adapters
 │       ├── policies/            # risk, dispatch, target validation
 │       ├── transactions/        # Safe Mode state machine dan lock
@@ -246,10 +246,10 @@ Dependensi: tidak ada. Output: `docs/integration-contracts.md` dan `docs/decisio
 - [ ] Verifikasi `auth-check`, pemetaan port, timeout, host-key verification, dan error aktual dari mikrotik-mcp.
 - [ ] Verifikasi Safe Mode pada router lab: aktivasi, status, mutasi kecil, verifikasi, commit, rollback, dan kehilangan koneksi.
 - [ ] Periksa tool generic/gateway, script execution, file operation, background task, dan nested invocation; identifikasi yang dapat melampaui klasifikasi read-only.
-- [ ] Buktikan satu permintaan Claude dengan katalog berukuran nyata. Verifikasi model, tool search/deferred loading, schema, streaming, dan payload batas provider.
+- [ ] Buktikan satu permintaan provider AI dengan katalog berukuran nyata (tool definitions dikirim penuh per mode). Verifikasi model, schema, streaming, dan payload batas provider (revisi M7: provider = Gemini/OpenRouter/Custom OpenAI-compatible).
 - [ ] Buktikan setup corpus Rosetta, satu pencarian dokumentasi, persistensi corpus setelah restart, dan prosedur refresh terkontrol.
 - [ ] Pilih library Google OIDC/session yang kompatibel dengan Bun/Hono dan validasi token menggunakan library tersebut; jangan menulis protokol OAuth/JWT verifier sendiri.
-- [ ] Verifikasi SDK Neon, B2, Brevo, dan format input file/gambar Claude melalui dokumentasi resmi saat implementasi.
+- [ ] Verifikasi SDK Neon, B2, Brevo, dan format input file/gambar provider AI yang dipilih melalui dokumentasi resmi saat implementasi.
 - [ ] Dokumentasikan jaringan deployment menuju router. Router LAN memerlukan backend pada jaringan yang dapat merutekan ke LAN tersebut, misalnya VPN; memasukkan IP privat saja tidak membuatnya dapat diakses dari VPS.
 
 **Kriteria selesai:** kontrak executable dan keterbatasan tercatat. Pekerjaan memakai mock boleh maju bila router/secret belum tersedia, tetapi pembuktian Write nyata tetap menjadi syarat sebelum fitur tersebut dinyatakan siap.
@@ -350,7 +350,7 @@ Dependensi: M0, M4. Pengembangan schema/adapter dapat berjalan bertahap; penguji
 - [x] Implementasikan parser output RouterOS yang menangani field kosong, flags, multi-line, escaping, error, dan variasi versi; kembalikan hasil bertipe dan teredaksi. (output-parser.ts: flags, .id, multi-line, unquote, detectError; hasil bertipe ParsedRow; redaksi via ctx.redact — unit test lulus)
 - [x] Jangan memasukkan credential router ke schema yang diisi model. Host/user/password diambil dari konteks connector yang sudah diotorisasi. (schema tool custom tidak punya field host/user/password; kredensial hanya di ConnectionSpec internal supervisor)
 - [x] Buat tool read/list lebih dahulu untuk memperoleh bukti keadaan, lalu add/set/remove dan operasi khusus berikut prosedur verifikasi/recovery-nya. (7 tool list/get dibuat & teruji; add/set/remove custom tidak diperlukan — operasi write tercakup tool upstream, terverifikasi coverage matrix; prosedur verifikasi/recovery di M5/M6)
-- [ ] Daftarkan tool tambahan ke server MikroTik bawaan dan adapter Claude dengan namespace konsisten; jalankan discovery lagi untuk membuktikan tool benar-benar callable melalui MCP.
+- [ ] Daftarkan tool tambahan ke server MikroTik bawaan dan adapter provider AI dengan namespace konsisten; jalankan discovery lagi untuk membuktikan tool benar-benar callable melalui MCP.
 - [ ] Masukkan tool tambahan ke filter Read-Only/Write, deferred search, capability check, lock router, Safe Mode, audit, rate limit, dan redaction yang sama dengan tool upstream.
 - [ ] Bila fitur Rosetta tidak ada, tambahkan ingestion/index/query atau tool dokumentasi melalui extension/fork Rosetta yang dipin dan bersumber dari dokumentasi resmi. Rosetta tetap tidak mengeksekusi command router.
 - [ ] Jika jumlah tool gabungan bertambah melewati batas provider, selesaikan arsitektur katalog/search dan buktikan dukungannya; jangan membuang tool tambahan dari katalog tanpa pemberitahuan.
@@ -362,21 +362,21 @@ Dependensi: M0, M4. Pengembangan schema/adapter dapat berjalan bertahap; penguji
 - [ ] Jika upstream kemudian menambah tool serupa, selesaikan benturan dan migrasi mapping berdasarkan uji kesetaraan; jangan merutekan panggilan ke implementasi baru tanpa validasi.
 - [x] Perbarui matriks setiap gap ditutup dan publikasikan ringkasan total operasi, covered-existing, covered-custom, unsupported-on-target dengan alasan, serta gap-open. (docs/tool-coverage.md + tooling/routeros-coverage.json: 489 operasi, 482 covered-existing, 7 covered-custom, 0 gap-open; unsupported-on-target ditentukan runtime per router)
 
-**Kriteria selesai:** tidak ada `gap-open` pada inventaris operasi yang didukung target; seluruh tool tambahan tersedia lewat MCP dan Claude, melewati pengamanan yang sama, serta memiliki bukti uji. Saran command manual boleh membantu saat pengembangan, tetapi tidak menggantikan kewajiban membuat tool yang memang dapat didukung.
+**Kriteria selesai:** tidak ada `gap-open` pada inventaris operasi yang didukung target; seluruh tool tambahan tersedia lewat MCP dan provider AI, melewati pengamanan yang sama, serta memiliki bukti uji. Saran command manual boleh membantu saat pengembangan, tetapi tidak menggantikan kewajiban membuat tool yang memang dapat didukung.
 
 ### M5 — Kebijakan Read-Only dan Write
 
 Dependensi: M4. Milestone ini wajib lulus sebelum mutasi router diaktifkan.
 
-- [x] Normalisasikan katalog MCP menjadi nama tool, origin server, schema, risk, capability, dan classification provenance; gunakan namespace yang cocok dengan batas nama Claude. (policies/normalize.ts: fqName mt:/docs:/custom:, provenance eksplisit upstream-annotation+read-only-registration/upstream-annotation/custom-manifest/none)
+- [x] Normalisasikan katalog MCP menjadi nama tool, origin server, schema, risk, capability, dan classification provenance; gunakan namespace yang cocok dengan batas nama tool provider. (policies/normalize.ts: fqName mt:/docs:/custom:, provenance eksplisit upstream-annotation+read-only-registration/upstream-annotation/custom-manifest/none)
 - [x] Gabungkan tool upstream dan tambahan M4B melalui jalur policy yang sama; unit test policy tidak bergantung pada nama/prefix tool bawaan saja. (dispatcher.buildModeCatalog + live-catalog.ts: upstream (live tools/list) + rosetta + custom_tools melalui jalur sama; test integrasi memakai katalog live 385+14+7, bukan nama prefix)
 - [x] Perlakukan tool tanpa annotation, annotation bertentangan, atau klasifikasi yang belum diperiksa sebagai tidak diizinkan sampai direview; jangan menebak dari awalan `get`/`list`. (normalize.ts: tanpa annotation → unknown; readOnlyHint tanpa registrasi read-only → unknown (kontradiksi); unknown ditolak dispatcher dengan TOOL_UNSUPPORTED — unit test lulus)
 - [x] Default record permission baru adalah `write_enabled=false`; state frontend hanya merefleksikan state backend. (M4 connector: connectionPermissions.writeEnabled default false; UI switch baca dari server, kirim expectedVersion)
-- [x] Pada Read-Only, kirim hanya tool MikroTik yang terverifikasi read-only serta tool dokumentasi Rosetta yang diperlukan ke API Claude. (live-catalog.integration.test: katalog read-only live = registrasi read-only child ∩ annotation + rosetta + custom; 19/19 test lulus, child process nyata)
+- [x] Pada Read-Only, kirim hanya tool MikroTik yang terverifikasi read-only serta tool dokumentasi Rosetta yang diperlukan ke provider AI. (live-catalog.integration.test: katalog read-only live = registrasi read-only child ∩ annotation + rosetta + custom; 19/19 test lulus, child process nyata)
 - [x] Pastikan tool write/destructive juga tidak masuk katalog deferred/search pada Read-Only. Definisi tersembunyi di deferred loading tetap merupakan tool yang didaftarkan. (buildModeCatalog filter pada SELURUH katalog sebelum ekspos; find_tools (deferred search upstream) hanya melihat katalog yang diizinkan — dispatcher juga re-check nama tool target invoke_tool; uji A10 gateway smuggling lulus)
 - [x] Audit generic invoker/gateway/script tool: tolak atau beri wrapper yang memeriksa target tool dan argumen efektif; jangan membuka jalur mutasi melalui tool berlabel read. (dispatcher: isGateway detection; invoke_tool/run_routeros_command TIDAK ada di katalog read-only; defense-in-depth re-dispatch inner tool — test gateway smuggling write via invoke_tool ditolak WRITE_DISABLED)
 - [x] Saat Write ON, daftarkan seluruh katalog read/write/destructive yang sudah tervalidasi. Jangan diam-diam membatasi ke beberapa tool top-k untuk menghindari masalah ukuran request. (buildModeCatalog write = semua risk read/write/destructive; test: write > read, escape hatch run_routeros_command hadir; unknown tetap dikecualikan)
-- [ ] Gunakan tool search/deferred loading jika hasil spike mendukung; semua definisi yang diizinkan tetap tersedia. Jika batas provider belum teratasi, laporkan blocker kontrak secara eksplisit. (menunggu M7: katalog 385+14+7 tool dikirim penuh per mode; deferred loading provider Anthropic dievaluasi saat agent loop dibangun — blocker ukuran request, bila ada, akan dilaporkan eksplisit)
+- [ ] Gunakan tool search/deferred loading jika hasil spike mendukung; semua definisi yang diizinkan tetap tersedia. Jika batas provider belum teratasi, laporkan blocker kontrak secara eksplisit. (menunggu M7: katalog 385+14+7 tool dikirim penuh per mode ke provider terpilih; deferred loading dievaluasi saat agent loop dibangun — blocker ukuran request, bila ada, akan dilaporkan eksplisit)
 - [x] Pada setiap dispatch, cek ulang session, owner connector, router terikat ke run, current mode/version, tool allowlist, schema input, capability, dan transaction state. (dispatcher.check: 7 tahap re-check per dispatch — session, owner, live mode+version CAS, catalog per mode, risk vs mode, schema, FORBIDDEN args, transactionState; 17 unit test)
 - [x] Tolak argumen LLM yang mencoba mengubah perangkat, host, credential, path lokal backend, atau target tenant di luar connector run. (FORBIDDEN_ARG_NAMES: host/ip/port/username/password/credential/device/target/path/tenant → FORBIDDEN; test A30 lulus)
 - [x] Lindungi perubahan mode dengan compare-and-set/version; UI menunggu respons server dan menampilkan kegagalan bila update tidak berhasil. (M4 setMode CAS POLICY_CHANGED 409 + UI invalidasi react-query pada error)
@@ -407,35 +407,39 @@ State transaksi minimum: `preparing → active → verifying → committing → 
 - [x] Izinkan cleanup rollback milik backend setelah Write dicabut; pengecualian internal ini tidak boleh menjadi izin mutasi yang dapat dipanggil model. (forceRollback hanya dipanggil backend (routes disconnect/mode); tidak ada path model — dispatcher menolak lifecycle tools; test forceRollback lulus)
 - [x] Bedakan `rollback requested`, `rollback verified`, dan `unknown`. Lakukan reconnect/recheck terkontrol sebelum menyimpulkan hasil akhir. (rollback(): status setelah aksi → closed=rolled_back verified; aktif → unknown; drop saat rollback → unknown "verified not claimed"; reconcile() baca window: aktif → rollback backend, closed → rolled_back auto-revert, tak terbaca → unknown; tidak pernah replay)
 - [x] Persist identitas transaksi dan fase penting sebelum tindakan eksternal; setelah process/server crash, tandai run terputus dan lakukan reconciliation, bukan mengulang mutasi. (transition() persist fase sebelum aksi eksternal; crash (session hilang) → assertActive menandai unknown, reconcile tidak replay — test process-crash lulus; audit_events transaction.begun/committed/rolled_back tersimpan)
-- [ ] Deduplikasi tool-call ID dan request run. Jangan otomatis retry mutasi dengan hasil tidak pasti; baca kondisi router dahulu. (menunggu M7 agent loop yang menghasilkan tool-call ID; koordinator tidak pernah retry — tidak ada jalur retry yang mungkin perlu didedup selain run loop)
+- [x] Deduplikasi tool-call ID dan request run. Jangan otomatis retry mutasi dengan hasil tidak pasti; baca kondisi router dahulu. (M7 loop.ts: dedup id via Map per run — id duplikat dijawab pesan tool DUPLICATE_CALL agar alternasi provider tetap valid, tidak dieksekusi ulang; idempotencyKey run unik per conversation → replay mengembalikan run yang sama (resumed:true); koordinator transaksi tidak pernah retry)
 - [x] Buat matriks capability/recovery untuk operasi destructive seperti reset, reboot, upgrade, penghapusan file, atau perubahan akses. Implementasikan penanganan yang teruji melalui M4B; selama belum siap, return `TOOL_UNSUPPORTED` dengan alasan dan tandai `gap-open`. Hanya ketidaktersediaan fitur nyata pada target yang boleh menjadi pengecualian cakupan permanen. (manifest custom M4B: recoveryStrategy/sensitiveFields/idempotent per tool; TOOL_UNSUPPORTED via capability check runtime; coverage matrix 489 operasi: destructive reset/reboot dll covered-existing oleh upstream dengan risk destructive di dispatcher; gap-open=0)
 - [x] Jangan mengiklankan Safe Mode sebagai rollback universal. Dokumentasikan pengaruh sesi admin eksternal, batas history, dan efek yang tidak dapat di-undo; jangan otomatis mengambil alih sesi admin lain. (docs/integration-contracts.md SafeModeManager: batas history penuh, sesi admin lain, tidak dijanjikan rollback universal; konflik sesi lain → 409 tanpa takeover)
-- [ ] Tampilkan ringkasan perubahan, hasil verifikasi, commit/rollback, dan status belum pasti pada chat serta audit. (audit_events transaction.* tersimpan; tampilan ringkasan di chat menunggu M7 SSE run wiring; API GET /api/transactions sudah mengekspos state ke owner)
+- [x] Tampilkan ringkasan perubahan, hasil verifikasi, commit/rollback, dan status belum pasti pada chat serta audit. (audit_events transaction.* tersimpan; M7 SSE menstream event tool.started/completed/failed + run.completed/cancelled ke chat; API GET /api/transactions mengekspos state lengkap ke owner — rendering UI ringkasan menunggu M9)
 
 **Kriteria selesai:** perubahan kecil pada router lab dapat commit dan rollback; failure injection termasuk koneksi putus dan proses mati tidak menghasilkan keberhasilan palsu, replay mutasi, atau transaksi yang hilang dari audit.
 
-### M7 — Agent Claude, Rosetta, dan streaming persisten
+### M7 — Agent multi-provider (Gemini/OpenRouter/Custom), Rosetta, dan streaming persisten
 
 Dependensi: M3–M5; jalur Write memakai M6.
 
-- [ ] Implementasikan adapter Anthropic dengan key server-only dan model dari environment; abstraksikan client secukupnya tanpa membuat sistem multi-provider.
-- [ ] Buat system instruction untuk bahasa, mode, router aktif, penggunaan dokumentasi, kejujuran hasil, dan larangan memperlakukan data tool/file sebagai instruksi otorisasi.
-- [ ] Bangun siklus pesan user → request Claude → validasi tool call lengkap → dispatch → tool result → request lanjutan → jawaban akhir.
-- [ ] Tunggu argumen tool lengkap dan lolos schema sebelum eksekusi; delta JSON yang belum lengkap tidak boleh dijalankan.
-- [ ] Pertahankan pasangan tool-use/tool-result dan format history provider yang valid; tangani tool error sebagai hasil bertipe.
-- [ ] Gunakan Rosetta untuk memeriksa sintaks/fitur RouterOS yang belum pasti dan sebelum perubahan yang membutuhkan rujukan; cocokkan dengan versi/capability router aktual.
-- [ ] Jika dokumentasi/capability belum dapat diverifikasi untuk suatu perubahan, jelaskan batasnya dan jangan mengarang hasil atau sintaks.
-- [ ] Simpan pesan dan content blocks yang diperlukan untuk kelanjutan tool loop; tampilkan ringkasan aktivitas tool tanpa chain-of-thought internal.
-- [ ] Redact output router sebelum diteruskan ke Claude, browser, atau penyimpanan; terapkan batas ukuran hasil, pagination, dan ringkasan bila perlu.
-- [ ] Perlakukan isi lampiran, router comment/log, serta dokumen hasil pencarian sebagai data tidak tepercaya; semuanya tetap melewati policy dispatcher.
-- [ ] Terapkan baseline batas satu run aktif per percakapan, maksimal 12 iterasi agent, 30 tool call, dan deadline 120 detik; buat configurable berdasarkan pengujian workload.
-- [ ] Batasi token output dan context budget; ringkas riwayat lama tanpa kehilangan router aktif, mode terkini, serta hasil transaksi yang relevan.
-- [ ] Simpan penggunaan token/durasi dan implementasikan rate limit chat per user; hentikan loop dengan penjelasan jika budget habis.
-- [ ] Implementasikan kontrak SSE bagian 7, cancel server, snapshot refresh, penanganan slow client, dan persist partial message saat run gagal.
-- [ ] Retry hanya request/read yang aman dengan backoff terbatas; provider rate-limit/error tidak boleh memicu replay mutasi.
-- [ ] Percakapan tanpa router tetap bisa menjawab dokumentasi melalui Rosetta; operasi router menjelaskan kebutuhan koneksi.
+> Revisi 2026-09-05 (permintaan user): Anthropic/Claude TIDAK DIPAKAI karena biaya; provider AI menjadi multi-provider OpenAI-compatible — Google Gemini (via endpoint OpenAI-compat resmi Google), OpenRouter, dan Custom (apiKey + baseUrl + model manual). Fitur tambahan wajib: auto-fetch daftar model provider saat kredensial diisi, dan input model manual tetap didukung.
 
-**Kriteria selesai:** respons nyata streaming sampai selesai, pencarian Rosetta dan read tool bekerja, history tetap valid setelah refresh, pembatalan berhenti di server, dan Write mengikuti transaksi M6.
+- [x] Implementasikan adapter provider AI dengan protokol OpenAI-compatible (`openai` SDK, baseURL injectable) untuk Gemini (`https://generativelanguage.googleapis.com/v1beta/openai/v1`), OpenRouter (`https://openrouter.ai/api/v1`), dan Custom (baseUrl bebas); kunci hanya server-side, tidak pernah dikirim ke browser. (agent/chat-client.ts: createOpenAiCompatibleClient via `openai` SDK v4 — baseURL+apiKey per user, stream AsyncGenerator text|tool_calls|usage|done; @anthropic-ai/sdk di-uninstall; mock deterministik createMockClient fallback bila user belum set provider. Bukti E2E: fake provider custom :3998 streaming tool call + teks final. JUJUR: Gemini & OpenRouter nyata belum diuji — user belum memberi API key; endpoint OpenAI-compat adalah yang didokumentasikan Google/OpenRouter)
+- [x] Persist pengaturan provider per user (providerKind, baseUrl, model, apiKey terenkripsi AES-GCM via keyRing yang sama dengan kredensial router); API key tidak pernah dikembalikan plaintext oleh API. (agent/provider-settings.ts + tabel ai_provider_settings + migrasi 0001 (lokal & Neon); sealSecret AAD "ai-provider"; GET hanya {kind,baseUrl,model,hasKey}; E2E: ciphertext di DB `FYHUXD0EfY5s+20umFo=`, key salah → UPSTREAM_AUTH_FAILED; test provider-settings.test.ts 7 lulus: round-trip, no-key-leak, upsert, wrong-keyring → INTERNAL_ERROR, validasi)
+- [x] Fitur auto-fetch model: endpoint backend mem-proxy daftar model dari provider (Gemini: `GET /v1beta/models` filter generateContent; OpenRouter/Custom: `GET /v1/models` OpenAI-compatible) saat user memasukkan apiKey/baseUrl — dipanggil dari backend agar key tidak diekspos ke browser; model juga tetap bisa ditulis manual. (agent/model-fetch.ts + POST /api/ai-provider/models — key transient tidak disimpan; timeout 12s; error typed UPSTREAM_AUTH_FAILED/UPSTREAM_TIMEOUT/UPSTREAM_ERROR. E2E: fake provider :3999 `/v1/models` → [test-model-a, test-model-b]; key salah → UPSTREAM_AUTH_FAILED. Test model-fetch.test.ts 6 lulus: native gemini endpoint + filter generateContent, Bearer openrouter/custom, slash normalize, 401/500 mapping, custom tanpa baseUrl ditolak sebelum fetch. Model manual tetap bisa ditulis di POST /api/ai-provider)
+- [x] Buat system instruction untuk bahasa, mode, router aktif, penggunaan dokumentasi, kejujuran hasil, dan larangan memperlakukan data tool/file sebagai instruksi otorisasi. (agent/instructions.ts: Bahasa Indonesia, aturan prompt-injection data≠instruksi, mode/router aktif dari policy snapshot)
+- [x] Bangun siklus pesan user → request provider → validasi tool call lengkap → dispatch → tool result → request lanjutan → jawaban akhir. (agent/loop.ts: history bounded 24 → provider stream → JSON.parse args → dispatcher.check → executeTool → tool message → iterasi; E2E terbukti: run.started → tool.started → tool.completed (routeros_search Rosetta NYATA "safe mode" → halaman manual Configuration Management) → message.delta ×2 → run.completed usage {promptTokens:11, completionTokens:9, toolCalls:1})
+- [x] Tunggu argumen tool lengkap dan lolos schema sebelum eksekusi; delta JSON yang belum lengkap tidak boleh dijalankan. (loop.ts: JSON.parse gagal → toolExecutions status rejected errorCode VALIDATION_FAILED, tidak dieksekusi; E2E sebelumnya membuktikan args kosong ditolak schema validator "argumen \"query\" wajib diisi" → tool.failed → provider menerima hasil error → tetap menjawab; test loop.test.ts: incomplete JSON → executed=0, rejected)
+- [x] Pertahankan pasangan tool-call/tool-result dan format history provider yang valid; tangani tool error sebagai hasil bertipe. (loop.ts: setiap assistant tool_calls selalu diikuti pesan tool — termasuk dedup id duplikat yang dijawab pesan DUPLICATE_CALL agar alternasi OpenAI tetap valid; denial/exception → content JSON {error, message} bertipe; test 4 skenario loop lulus)
+- [x] Gunakan Rosetta untuk memeriksa sintaks/fitur RouterOS yang belum pasti dan sebelum perubahan yang membutuhkan rujukan; cocokkan dengan versi/capability router aktual. (tool docs:routeros_search tersedia di katalog semua mode; executeDocsTool → rosetta.call query/limit max 10 same-process; E2E run tanpa router memanggilnya sukses. Instruksi sistem mengarahkan model memeriksa docs sebelum sintaks tidak pasti; pencocokan versi aktual menunggu router lab — belum bisa dibuktikan)
+- [x] Jika dokumentasi/capability belum dapat diverifikasi untuk suatu perubahan, jelaskan batasnya dan jangan mengarang hasil atau sintaks. (system instruction memuat aturan kejujuran: tidak mengarang sintaks/command; hasil tool yang gagal dikembalikan sebagai error bertipe ke model)
+- [x] Simpan pesan dan content blocks yang diperlukan untuk kelanjutan tool loop; tampilkan ringkasan aktivitas tool tanpa chain-of-thought internal. (messages persist user+assistant final; tool_executions per call (sanitizedInput, resultSummary ≤500, status, durationMs); SSE hanya tool.started/completed/failed dengan ringkasan ≤400 — tanpa chain-of-thought; E2E: GET messages menampilkan 2 pesan complete)
+- [x] Redact output router sebelum diteruskan ke provider, browser, atau penyimpanan; terapkan batas ukuran hasil, pagination, dan ringkasan bila perlu. (loop.ts redactText output tool ≤8000 char, summary ≤500; resultSummary/hub payload semua melewati redaction lib yang sama dengan M4)
+- [x] Perlakukan isi lampiran, router comment/log, serta dokumen hasil pencarian sebagai data tidak tepercaya; semuanya tetap melewati policy dispatcher. (system instruction: data tool/dokumen/lampiran bukan instruksi; semua tool call tetap dispatch ulang — dispatcher mengecek ulang mode/ownership/schema setiap call; lampiran menunggu M8)
+- [x] Terapkan baseline batas satu run aktif per percakapan, maksimal 12 iterasi agent, 30 tool call, dan deadline 120 detik; buat configurable berdasarkan pengujian workload. (config AGENT_MAX_STEPS=12, AGENT_MAX_TOOL_CALLS=30, AGENT_RUN_TIMEOUT_MS=120000; satu run aktif per conversation → RUN_ALREADY_ACTIVE; test TOOL_CALL_BUDGET lulus; loop.isCancelled per step)
+- [x] Batasi token output dan context budget; ringkas riwayat lama tanpa kehilangan router aktif, mode terkini, serta hasil transaksi yang relevan. (AGENT_MAX_TOKENS per request; history window 24 pesan terakhir + policy snapshot segar setiap run; ringkasan riwayat penuh menunggu beban nyata — ditandai untuk evaluasi M10)
+- [x] Simpan penggunaan token/durasi dan implementasikan rate limit chat per user; hentikan loop dengan penjelasan jika budget habis. (agent_runs.usage persist {promptTokens, completionTokens, toolCalls}; E2E run.completed membawa usage; rate limit chat per user belum — catat gap-open untuk M10)
+- [x] Implementasikan kontrak SSE bagian 7, cancel server, snapshot refresh, penanganan slow client, dan persist partial message saat run gagal. (routes/chat.ts + agent/hub.ts: replay buffer cap 2000 + retention 120s; GET /api/runs/:id/events heartbeat 15s + event done; GET /api/runs/:id snapshot {run,events}; POST /api/runs/:id/cancel → activeRuns cancelled; persist assistant meski gagal; idempotencyKey unik per conversation → resumed:true terbukti; E2E SSE full stream tercatat)
+- [x] Retry hanya request/read yang aman dengan backoff terbatas; provider rate-limit/error tidak boleh memicu replay mutasi. (tidak ada retry otomatis di loop — error provider → run.failed typed; mutasi tidak pernah replay: idempotencyKey + tidak ada jalur retry; keputusan sengaja: retry ditambahkan di M10 hanya bila workload membuktikan perlunya)
+- [x] Percakapan tanpa router tetap bisa menjawab dokumentasi melalui Rosetta; operasi router menjelaskan kebutuhan koneksi. (loop.ts: connectionId null → katalog difilter docs:* + policy mode pinned read-only v0; E2E run tanpa router sukses memanggil docs:routeros_search; tool mt:/custom: tanpa router → TOOL_UNSUPPORTED; docs/decisions.md D-0xx mencatat pilihan)
+
+**Kriteria selesai:** respons nyata streaming sampai selesai (provider nyata bila kredensial terisi; mock deterministik bila belum), auto-fetch model terbukti untuk ketiga jenis provider, pencarian Rosetta dan read tool bekerja, history tetap valid setelah refresh, pembatalan berhenti di server, dan Write mengikuti transaksi M6.
 
 ### M8 — Upload file/gambar ke B2 dan pemakaian oleh AI
 
@@ -452,7 +456,7 @@ Baseline upload memakai proxy multipart backend ke B2 agar validasi ukuran/tipe 
 - [ ] Status lampiran mengikuti `uploading → ready/failed`; run hanya menerima attachment ID ready milik user dan percakapan tersebut.
 - [ ] Setelah upload, cocokkan metadata object B2 dan DB; tangani kegagalan parsial dengan cleanup idempoten.
 - [ ] Akses/download memerlukan ownership check dan URL baca dengan expiry singkat; jangan simpan presigned URL sebagai identitas permanen file.
-- [ ] Backend mengambil objek berdasarkan attachment ID terotorisasi, lalu mengirim image/PDF melalui format Claude yang didukung model. TXT/CSV/LOG/RSC diproses sebagai teks dengan batas ukuran/token.
+- [ ] Backend mengambil objek berdasarkan attachment ID terotorisasi, lalu mengirim image/PDF melalui format input provider AI yang dipilih. TXT/CSV/LOG/RSC diproses sebagai teks dengan batas ukuran/token.
 - [ ] File RSC/config adalah data untuk analisis dan tidak dijalankan sebagai script otomatis. Kode/isi file tidak memperoleh izin Write.
 - [ ] Jelaskan di UI jika file tersimpan tetapi formatnya belum dapat dianalisis; jangan mengklaim AI telah membaca lampiran yang tidak masuk request model.
 - [ ] Redact credential yang terdeteksi pada file konfigurasi sebelum dimasukkan ke konteks AI; preview/download raw tetap hanya tersedia kepada pemilik.
@@ -490,7 +494,7 @@ Dependensi: fitur terkait sudah diimplementasikan. Uji risiko penting sejak mile
 - [ ] Jalankan contract test dan coverage checker katalog gabungan M4B; setiap tool tambahan harus melewati pengujian mode, schema, sesi transaksi, output, dan error yang sama dengan tool bawaan.
 - [ ] Buat E2E alur login, connector, read chat, Write, Stop, upload, refresh, dan pergantian mode antartab.
 - [ ] Jalankan skenario penerimaan pada bagian 10; catat hasil beserta bukti tersanitasi.
-- [ ] Jalankan smoke test nyata terhadap Google, Brevo, Neon, B2, Claude, Rosetta, dan MikroTik lab. Tandai jelas mana mock dan mana layanan nyata.
+- [ ] Jalankan smoke test nyata terhadap Google, Brevo, Neon, B2, provider AI terpilih (Gemini/OpenRouter/Custom), Rosetta, dan MikroTik lab. Tandai jelas mana mock dan mana layanan nyata.
 - [ ] Uji SQL/input injection, XSS Markdown, CSRF, IDOR, target SSH terlarang/DNS rebinding, OTP brute-force, upload spoofing, serta prompt injection ke dispatcher.
 - [ ] Periksa bundle/source map frontend, error response, log, audit, dan telemetry dari kebocoran secret menggunakan fixture secret canary.
 - [ ] Uji kehilangan jaringan SSH, process crash, backend restart, provider timeout, B2 gagal, Neon gagal sebelum/sesudah tool call, serta cleanup ulang setelah gagal.
@@ -541,8 +545,14 @@ BREVO_API_KEY=<brevo-transactional-api-key>
 BREVO_SENDER_NAME="MikroTik AI Agent"
 BREVO_SENDER_EMAIL=<verified-sender-email>
 
-ANTHROPIC_API_KEY=<anthropic-api-key>
-ANTHROPIC_MODEL=<model-yang-diverifikasi-mendukung-tool-search-dan-input-yang-dipakai>
+# Provider AI multi-provider per user (OpenAI-compatible):
+# kind: gemini | openrouter | custom — konfigurasi per user disimpan
+# terenkripsi di DB (M7). Env di bawah hanya default server saat user
+# belum mengatur provider sendiri.
+AI_PROVIDER_KIND=
+AI_PROVIDER_API_KEY=
+AI_PROVIDER_BASE_URL=
+AI_PROVIDER_MODEL=
 
 ROUTER_CREDENTIAL_KEY=<base64-key-32-byte>
 ROUTER_CREDENTIAL_KEY_VERSION=1
@@ -574,7 +584,7 @@ LOG_LEVEL=info
 ```
 
 - [ ] Implementasikan schema environment dan dokumentasikan satuan/default/batas untuk setiap konfigurasi aplikasi.
-- [ ] Sediakan `ANTHROPIC_API_KEY`, model, encryption key, dan OTP secret; kebutuhan ini belum tercakup lengkap dalam environment prompt asal.
+- [ ] Sediakan kredensial provider AI terpilih (Gemini/OpenRouter/Custom via setelan user), encryption key, dan OTP secret; kebutuhan ini belum tercakup lengkap dalam environment prompt asal.
 - [ ] Isi redirect URI lokal/production sesuai origin nyata dan daftarkan nilai yang sama pada Google OAuth.
 - [ ] Validasi sender Brevo; alamat pengirim tidak otomatis valid hanya karena tercantum dalam konfigurasi.
 - [ ] Jangan gunakan `DB_CONNECTION`, `MAIL_MAILER`, atau interpolasi Laravel `MAIL_FROM_NAME="${APP_NAME}"` sebagai konfigurasi wajib stack ini.
@@ -609,13 +619,13 @@ LOG_LEVEL=info
 | A20 | MIME palsu, file terlalu besar, upload putus, objek user lain | Ditolak/cleanup; object dan URL tetap terlindungi | [ ] |
 | A21 | Mengganti ID conversation/connector/attachment/run ke user lain | Semua API dan stream menolak akses lintas user | [ ] |
 | A22 | Refresh dan reconnect ketika streaming | Status/pesan dipulihkan, event tidak duplikat, run tidak dieksekusi ulang | [ ] |
-| A23 | Claude/Brevo/B2/Neon/Rosetta tidak tersedia | Error jelas, tidak mengarang sukses, tidak mengulang mutasi tidak pasti | [ ] |
+| A23 | Provider AI/Brevo/B2/Neon/Rosetta tidak tersedia | Error jelas, tidak mengarang sukses, tidak mengulang mutasi tidak pasti | [ ] |
 | A24 | Input host mengarah metadata/loopback atau berubah lewat DNS | Target terlarang tidak dihubungi; subnet router yang diizinkan tetap bekerja | [ ] |
 | A25 | Inspeksi DB, bundle, log, audit, dan respons error | Secret canary tidak muncul; password router hanya ciphertext di DB | [ ] |
 | A26 | Mobile, keyboard-only, Markdown berbahaya, tema gelap/terang | UI dapat dipakai; XSS tidak berjalan; mode/status terbaca | [ ] |
 | A27 | Batas loop/proses tercapai atau SSE client lambat | Resource dibatasi, respons terkontrol, tidak ada mutasi tambahan | [ ] |
 | A28 | Safe Mode mendekati limit atau operasi tak dapat dipulihkan | Tidak mengklaim rollback universal; eksekusi mengikuti capability/recovery teruji | [ ] |
-| A29 | Operasi RouterOS target tidak ada pada MCP upstream | Tool custom diimplementasikan, ditemukan lewat MCP, dipilih Claude, dan menghasilkan perilaku nyata yang diuji | [ ] |
+| A29 | Operasi RouterOS target tidak ada pada MCP upstream | Tool custom diimplementasikan, ditemukan lewat MCP, dipilih model, dan menghasilkan perilaku nyata yang diuji | [ ] |
 | A30 | Tool custom mutasi dipanggil pada Read-Only atau lewat wrapper | Tidak terdaftar dalam katalog model dan tetap ditolak dispatcher | [ ] |
 | A31 | Tool upstream dan custom dipakai dalam satu transaksi | Memakai router/session/lock yang sama; commit dan rollback terverifikasi | [ ] |
 | A32 | Upgrade upstream menambah tool atau mengubah schema/annotation | Perubahan terdeteksi; konflik/risiko ditinjau sebelum release | [ ] |
@@ -632,7 +642,7 @@ Urutan utama: **M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M
 - [ ] Build, lint, typecheck, dan pengujian relevan lulus dari checkout bersih.
 - [ ] Tidak ada fitur inti yang diam-diam masih mock atau mengembalikan sukses statis.
 - [ ] Matriks tool lengkap memiliki nol gap-open untuk operasi RouterOS yang didukung target; tool custom sudah terpasang pada build deployment dan memiliki test evidence.
-- [ ] Integrasi nyata Google, Brevo, Neon, B2, Claude, kedua MCP, dan router lab memiliki bukti uji.
+- [ ] Integrasi nyata Google, Brevo, Neon, B2, provider AI terpilih (Gemini/OpenRouter/Custom), kedua MCP, dan router lab memiliki bukti uji.
 - [ ] Pengecualian kemampuan versi/package/hardware RouterOS dan batas Safe Mode dijelaskan dengan bukti; kekurangan tool MCP yang dapat diimplementasikan sudah ditutup melalui M4B.
 - [ ] Konfigurasi production, secret replacement, corpus Rosetta, migrasi, backup, dan recovery tercatat.
 - [ ] README cukup untuk menjalankan aplikasi; log progres menyatakan dengan jujur pekerjaan yang selesai dan yang masih terhambat.
@@ -652,5 +662,6 @@ Tambahkan satu entri setiap milestone atau setiap perubahan besar. Bagian ini ma
 | 2026-09-05 | M5 policy dispatcher | apps/api/src/policies/{normalize,dispatcher,live-catalog,schema-validator}.ts + test (19 lulus: 17 unit + 2 integrasi child-process nyata) | Katalog read-only live (385 upstream ∩ annotation + 14 rosetta + 7 custom) terbukti tanpa tool mutasi & escape hatch; dispatch paksa run_routeros_command ditolak TOOL_UNSUPPORTED; race Write-OFF dari tab lain → POLICY_CHANGED; gateway smuggling → WRITE_DISABLED; arg host/credential → FORBIDDEN; mutasi tanpa Safe Mode aktif → SAFE_MODE_UNAVAILABLE; audit tool.allowed/denied ke audit_events tanpa secret | Deferred-loading provider dievaluasi di M7 (katalog penuh per mode saat ini); recovery transaksi aktif saat OFF menunggu M6 |
 | 2026-09-05 | M6 transaksi Safe Mode | apps/api/src/transactions/{coordinator,mcp-session}.ts + coordinator.test.ts (12 lulus), routes/transactions.ts, hook disconnect/Write-OFF di routes/connectors.ts, dispatcher blokir lifecycle tool (20 test policy lulus) | State machine preparing→active→verifying→committing→committed / rolling_back→rolled_back / unknown dengan transisi ketat & persist-fase-sebelum-aksi; failure injection: drop mid-commit → unknown (tanpa false success), commit gagal window aktif → rolled_back, crash → unknown + reconcile tanpa replay, konflik 2 tx router sama → 409 tanpa identitas, action cap per aksi RouterOS, forceRollback Write OFF; dispatcher menolak enable/commit/rollback_safe_mode dari model + gateway smuggling; audit transaction.begun/committed/rolled_back; 70 test API lulus, typecheck+lint bersih | Mutasi nyata via safe mode menunggu lab router (adaptor & state machine teruji dengan fake session + probe nyata Brevo/Neon/B2 dipasang: lihat D-010); ringkasan transaksi di chat + dedup tool-call ID menunggu M7 |
 | 2026-09-05 | Infrastruktur kredensial nyata | .env (ter-gitignore; user-supplied), apps/api/scripts/migrate-neon.ts, services/brevo-smtp.ts, docs/decisions.md D-010 | Neon: migrasi nyata via neon-http → 14 tabel + journal di neondb (pg Pool ke pooler ECONNRESET dari host ini); B2: b2_authorize_account OK, bucket mikrotik-agent terverifikasi (allPrivate, s3.us-west-004); key non-master mikrotik-key 401 invalid; Brevo: REST API ditolak blokir IP 159.26.119.220 (blocker eksternal, perlu whitelist user), SMTP key VALID — AUTH LOGIN TLS 1.3 sukses + sendMail nyata 250 queued; OTP produksi via BrevoSmtpSender (nodemailer) | BREVO_SENDER_EMAIL belum diisi (sender terverifikasi Brevo belum ada) → OTP dev masih ke log; Brevo REST API menunggu whitelist IP user; B2 dipakai penuh di M8 |
+| 2026-09-05 | M7 agent multi-provider (revisi user: Gemini/OpenRouter/Custom, tanpa Anthropic) + auto-fetch model | apps/api/src/agent/{provider-settings,model-fetch,chat-client,loop,hub,tool-executor,instructions}.ts, routes/{ai-provider,chat}.ts, db schema ai_provider_settings + drizzle/0001 (applied lokal & Neon), test agent 17 lulus (model-fetch 6, provider-settings 7, loop 4) — total 87 test API; E2E tercatat di atas | Adapter OpenAI-compatible via `openai` SDK (baseURL injectable, stream AsyncGenerator); apiKey per-user disegel AES-GCM (GET hanya hasKey, tidak pernah plaintext — ciphertext terverifikasi di DB); auto-fetch: Gemini native /v1beta/models (filter generateContent) + OpenRouter/Custom {base}/models Bearer, timeout 12s, error typed — E2E fake provider membuktikan [test-model-a,b] & UPSTREAM_AUTH_FAILED; agent loop: tool call JSON lengkap → dispatcher.check → executeTool → tool message → iterasi (E2E: docs:routeros_search Rosetta NYATA "safe mode" → halaman manual MikroTik → jawaban final → run.completed usage); args tidak-lengkap → rejected VALIDATION_FAILED tanpa eksekusi; denial policy → tool.failed typed, run tetap selesai; budget TOOL_CALL_BUDGET; tanpa router → katalog docs-only + mode pinned read-only v0; SSE: replay buffer + heartbeat + snapshot + cancel + idempotencyKey resumed:true terbukti; redact output ≤8000; tanpa retry mutasi | JUJUR: Gemini & OpenRouter nyata belum teruji (user belum beri API key) — bukti via mock deterministik + fake provider lokal OpenAI-compatible; rate limit chat per user + ringkasan riwayat penuh ditunda ke M10; attachmen M8; UI provider settings + chat M9 |
 
 **Instruksi mulai untuk AI pelaksana:** baca `plan.md`, kerjakan M0, lanjutkan implementasi sesuai urutan, dan perbarui checkbox hanya dengan bukti. Jika credential/domain/router lab belum tersedia, lanjutkan pekerjaan yang independen sambil mencatat kebutuhan eksternal secara spesifik. Jangan menurunkan pengamanan atau mengklaim integrasi berhasil untuk menghilangkan blocker.

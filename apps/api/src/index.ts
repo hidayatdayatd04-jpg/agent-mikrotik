@@ -166,8 +166,72 @@ const txCoordinator = new TransactionCoordinator({
   verifyChecks: (ctx) => safeModeSessions.verifyManagement(ctx),
 });
 
+// M7: AI provider (multi-provider OpenAI-compatible; Gemini/OpenRouter/custom
+// per user; mock deterministik bila belum dikonfigurasi).
+import { createProviderSettingsService } from "./agent/provider-settings";
+import { createOpenAiCompatibleClient, createMockClient } from "./agent/chat-client";
+import { buildSystemInstruction } from "./agent/instructions";
+import { createAgentLoop } from "./agent/loop";
+import { RunEventHub } from "./agent/hub";
+import { createToolExecutor } from "./agent/tool-executor";
+import { createAiProviderRoutes } from "./routes/ai-provider";
+import { createChatRoutes } from "./routes/chat";
+
+const providerSettings = createProviderSettingsService({ db, keyRing, logger });
+const executeTool = createToolExecutor({ supervisor, connectors, logger });
+const executeDocsTool = async (input: { fqName: string; args: unknown }): Promise<{ ok: boolean; output: string; errorCode?: string }> => {
+  const rawName = input.fqName.includes(":") ? input.fqName.split(":")[1]! : input.fqName;
+  try {
+    const args = (input.args ?? {}) as Record<string, unknown>;
+    if (rawName === "routeros_search") {
+      const query = String(args.query ?? "").slice(0, 256);
+      const limit = Math.min(Math.max(Number(args.limit ?? 5), 1), 10);
+      const result = await rosetta.call("routeros_search", { query, limit });
+      return { ok: true, output: JSON.stringify(result).slice(0, 6000) };
+    }
+    return { ok: false, output: `Tool dokumentasi ${rawName} tidak dikenal.`, errorCode: "TOOL_UNSUPPORTED" };
+  } catch (err) {
+    return { ok: false, output: err instanceof Error ? err.message : String(err), errorCode: "TOOL_FAILED" };
+  }
+};
+const hub = new RunEventHub();
+
+const agentLoop = createAgentLoop({
+  db,
+  logger,
+  dispatcher,
+  txCoordinator,
+  catalog: catalogSource,
+  limits: {
+    maxSteps: config.AGENT_MAX_STEPS,
+    maxToolCalls: config.AGENT_MAX_TOOL_CALLS,
+    runTimeoutMs: config.AGENT_RUN_TIMEOUT_MS,
+    maxTokens: 4096,
+  },
+});
+
 const connectorRoutes = createConnectorRoutes({ connectors, supervisor, txCoordinator, safeModeSessions, logger });
 const transactionRoutes = createTransactionRoutes({ coordinator: txCoordinator, connectors, db, logger });
+const aiProviderRoutes = createAiProviderRoutes({ providers: providerSettings, logger });
+const chatRoutes = createChatRoutes({
+  db,
+  logger,
+  loop: agentLoop,
+  hub,
+  connectors,
+  getProvider: (userId) => providerSettings.getWithKey(userId),
+  makeClient: (cfg) => createOpenAiCompatibleClient(cfg, logger),
+  makeMockClient: () => createMockClient(),
+  executeTool,
+  executeDocsTool,
+  buildInstruction: buildSystemInstruction,
+  limits: {
+    maxSteps: config.AGENT_MAX_STEPS,
+    maxToolCalls: config.AGENT_MAX_TOOL_CALLS,
+    runTimeoutMs: config.AGENT_RUN_TIMEOUT_MS,
+    maxTokens: 4096,
+  },
+});
 
 const app = new Hono<HonoEnv>();
 
@@ -185,6 +249,8 @@ app.use(async (c, next) => {
 app.route("/api/auth", authRoutes);
 app.route("/api/connectors", connectorRoutes);
 app.route("/api/transactions", transactionRoutes);
+app.route("/api/ai-provider", aiProviderRoutes);
+app.route("/", chatRoutes);
 
 app.onError((err, c) => {
   const log = c.get("logger");
@@ -246,7 +312,7 @@ const port = config.API_PORT;
 logger.info(`starting api server on :${port}`, {
   nodeEnv: config.NODE_ENV,
   mockEmail: config.useMockEmail,
-  mockAnthropic: config.useMockAnthropic,
+  mockProvider: config.useMockProvider,
   mockOAuth: config.useMockOAuth,
 });
 

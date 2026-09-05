@@ -128,6 +128,25 @@ export const connectionPermissions = pgTable(
   ],
 );
 
+export const aiProviderSettings = pgTable(
+  "ai_provider_settings",
+  {
+    userId: uuid("user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: varchar("kind", { length: 32 }).notNull(), // gemini | openrouter | custom
+    baseUrl: varchar("base_url", { length: 512 }).notNull(),
+    model: varchar("model", { length: 255 }).notNull(),
+    // apiKey sealed with the same AES-256-GCM keyRing as router credentials
+    apiKeyCiphertext: text("api_key_ciphertext").notNull(),
+    apiKeyNonce: varchar("api_key_nonce", { length: 64 }).notNull(),
+    apiKeyAuthTag: varchar("api_key_auth_tag", { length: 64 }).notNull(),
+    keyVersion: integer("key_version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+);
+
 export const conversations = pgTable(
   "conversations",
   {

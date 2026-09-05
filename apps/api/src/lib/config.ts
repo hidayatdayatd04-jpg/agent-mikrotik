@@ -38,8 +38,12 @@ export const EnvSchema = z.object({
   BREVO_SMTP_PORT: int(587, 1, 65535),
   BREVO_SMTP_LOGIN: z.preprocess((v) => (v === "" ? undefined : v), z.string().optional()),
 
-  ANTHROPIC_API_KEY: z.string().optional(),
-  ANTHROPIC_MODEL: z.string().optional(),
+  // Default server-side provider (fallback when the user has not configured
+  // their own provider in the DB). The user's per-user setting takes priority.
+  AI_PROVIDER_KIND: z.enum(["gemini", "openrouter", "custom", ""]).default(""),
+  AI_PROVIDER_BASE_URL: z.string().optional(),
+  AI_PROVIDER_MODEL: z.string().optional(),
+  AI_PROVIDER_API_KEY: z.string().optional(),
 
   ROUTER_CREDENTIAL_KEY: z
     .string()
@@ -82,7 +86,7 @@ export type Env = z.infer<typeof EnvSchema>;
 export interface Config extends Env {
   isProduction: boolean;
   useMockEmail: boolean;
-  useMockAnthropic: boolean;
+  useMockProvider: boolean;
   useMockOAuth: boolean;
   trustedOrigins: string[];
   routerAllowedCidrs: string[];
@@ -106,7 +110,7 @@ export function loadConfig(from: Record<string, string | undefined> = process.en
     // sender). The REST API key alone is NOT sufficient: Brevo blocks unknown
     // IPs on the API (docs/decisions.md D-010) and sending needs a sender address.
     useMockEmail: !env.BREVO_SMTP_KEY || !env.BREVO_SMTP_LOGIN || !env.BREVO_SENDER_EMAIL,
-    useMockAnthropic: !env.ANTHROPIC_API_KEY,
+    useMockProvider: !env.AI_PROVIDER_API_KEY,
     useMockOAuth: !env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET,
     trustedOrigins: env.TRUSTED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean),
     routerAllowedCidrs: env.ROUTER_ALLOWED_CIDRS.split(",").map((s) => s.trim()).filter(Boolean),

@@ -73,3 +73,17 @@ Monorepo Bun workspaces sesuai plan.md §5: `apps/web`, `apps/api`, `packages/sh
 **Keputusan:** Jalur yang terbukti bekerja (neon-http untuk Neon, SMTP untuk Brevo, Master key S3-compatible untuk B2) menjadi jalur production; yang terblokir (Brevo REST API) didokumentasikan sebagai blocker eksternal, tidak di-klaim aktif. `.env` tidak pernah di-commit (gitignore); template `.env.example` tetap placeholder.
 
 **Dampak:** Checkbox integrasi nyata di plan.md untuk Neon/B2/Brevo-SMTP dicentang dengan bukti di atas; Brevo REST API tetap blocker eksternal sampai user men-whitelist IP 159.26.119.220.
+
+## D-011 — Provider AI multi-provider OpenAI-compatible (Gemini/OpenRouter/Custom); Anthropic dikeluarkan
+
+**Tanggal:** 5 Sep 2026 (M7, revisi permintaan user). User menolak Anthropic/Claude karena biaya; provider AI menjadi pilihan user: Google Gemini (endpoint OpenAI-compat resmi `https://generativelanguage.googleapis.com/v1beta/openai/v1`), OpenRouter (`https://openrouter.ai/api/v1`), atau Custom (apiKey + baseUrl + model manual). `@anthropic-ai/sdk` di-uninstall; satu SDK `openai` v4 dengan baseURL injectable melayani ketiganya.
+
+**Keputusan:**
+- Pengaturan provider per-user di tabel `ai_provider_settings` (bukan env) — apiKey disegel AES-256-GCM via keyRing yang sama dengan kredensial router (AAD `ai-provider`); GET tidak pernah mengembalikan key, hanya `hasKey`. Env `AI_PROVIDER_*` hanya default server.
+- **Auto-fetch model**: backend mem-proxy daftar model saat user mengisi apiKey/baseUrl — Gemini native `GET /v1beta/models` (header `x-goog-api-key`, filter `supportedGenerationMethods` memuat `generateContent`), OpenRouter/Custom `GET {base}/models` Bearer. Key transient, tidak disimpan. Model tetap bisa ditulis manual. Timeout 12s; error typed `UPSTREAM_AUTH_FAILED`/`UPSTREAM_TIMEOUT`/`UPSTREAM_ERROR`.
+- Run tanpa router terhubung: katalog dibatasi `docs:*` + policy mode dipatok read-only v0 — percakapan dokumentasi tetap berfungsi, operasi router menjelaskan kebutuhan koneksi (`TOOL_UNSUPPORTED`).
+- Nama tool di-namespace ke ruang provider (`[^A-Za-z0-9_-]` → `_`) dan dipetakan balik ke fqName saat eksekusi; tool `docs:*` dieksekusi via rosetta in-process.
+
+**Bukti:** E2E dengan mock deterministik + fake provider OpenAI-compatible lokal (ports 3998/3999): auto-fetch [test-model-a,b], key salah → UPSTREAM_AUTH_FAILED, tool loop penuh `docs:routeros_search` Rosetta nyata ("safe mode" → halaman manual MikroTik Configuration Management) → jawaban final → run.completed usage; SSE replay + heartbeat + snapshot + cancel + idempotency resumed:true; 17 unit test agent (model-fetch 6, provider-settings 7, loop 4) + total 87 test API, typecheck + lint bersih.
+
+**Batas jujur:** Gemini & OpenRouter nyata BELUM diuji — user belum memberi API key provider; bukti saat ini via adapter yang sama (protokol OpenAI-compatible) terhadap fake provider lokal. `.env.example` tidak berisi key nyata.
