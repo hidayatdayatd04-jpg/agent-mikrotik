@@ -112,6 +112,28 @@ export function createConnectorRoutes(deps: {
   routes.patch("/:id/mode", zValidator("json", ModeSchema), async (c) => {
     const session = requireSession(c);
     const { mode, expectedVersion } = c.req.valid("json");
+    // Write OFF must first roll back any live transaction on this connection:
+    // revoke mutations at the source, then flip the mode atomically.
+    if (mode === "read-only") {
+      try {
+        const conn = await deps.connectors.requireOwned(session.userId, c.req.param("id"))();
+        const active = await deps.txCoordinator.activeTransactionsForRouter(conn.routerIdentity ?? "");
+        for (const tx of active) {
+          if (tx.connectionId !== c.req.param("id")) continue;
+          if (tx.state === "active" || tx.state === "verifying" || tx.state === "preparing") {
+            const r = await deps.txCoordinator.forceRollback(tx.id, session.userId);
+            deps.logger.info("transaction force-rolled back on Write OFF", { transactionId: tx.id, state: r.state });
+          }
+        }
+        deps.safeModeSessions.forget(session.userId, c.req.param("id"));
+      } catch (err) {
+        deps.logger.warn("transaction cleanup on Write OFF failed", {
+          connectionId: c.req.param("id"),
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      await deps.supervisor.stop(session.userId, c.req.param("id"));
+    }
     // mode change requires the connector to be connected and verified
     const result = await deps.connectors.setMode(session.userId, c.req.param("id"), mode, expectedVersion);
     return c.json({ connector: result.connector, version: result.version });

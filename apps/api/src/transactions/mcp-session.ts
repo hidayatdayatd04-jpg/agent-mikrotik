@@ -98,6 +98,39 @@ export function createSafeModeSessionFactory(deps: {
       return session;
     },
 
+    /**
+     * Pre-commit management-plane probe: execute a read tool on the SAME child
+     * that holds the safe-mode window. A successful SSH command alone does not
+     * prove the management plane is healthy — this checks the router still
+     * answers identity reads through the transaction's own connection.
+     */
+    async verifyManagement(ctx: TransactionContext): Promise<{ ok: boolean; detail: string }> {
+      try {
+        const conn = await deps.getConnection(ctx.userId, ctx.connectionId);
+        const child = await deps.supervisor.getOrSpawn({
+          connectionId: ctx.connectionId,
+          userId: ctx.userId,
+          host: conn.spec.host,
+          port: conn.spec.port,
+          username: conn.spec.username,
+          password: conn.spec.password,
+          hostKeyFingerprint: conn.spec.hostKeyFingerprint,
+          readOnly: false,
+        });
+        children.set(key(ctx.userId, ctx.connectionId), child);
+        const raw = (await child.client.callTool({ name: "get_system_identity", arguments: {} })) as {
+          content?: { type: string; text?: string }[];
+          isError?: boolean;
+        };
+        if (raw.isError) return { ok: false, detail: "probe identitas router mengembalikan error" };
+        const text = (raw.content ?? []).map((c) => (c.type === "text" ? c.text ?? "" : "")).join("\n");
+        if (!text.trim()) return { ok: false, detail: "probe identitas router kosong" };
+        return { ok: true, detail: "manajemen router menjawab pembacaan identitas" };
+      } catch (err) {
+        return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+      }
+    },
+
     /** Drop the cached child reference (e.g. on disconnect). */
     forget(userId: string, connectionId: string) {
       children.delete(`${userId}:${connectionId}`);

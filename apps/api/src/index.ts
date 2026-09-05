@@ -163,19 +163,7 @@ const txCoordinator = new TransactionCoordinator({
   logger,
   maxActionsPerTransaction: config.MAX_ACTIONS_PER_TRANSACTION,
   openSession: (ctx) => safeModeSessions.openSession(ctx),
-  verifyChecks: async (ctx) => {
-    // pre-commit read-only health probe on the SAME child that holds the
-    // safe-mode window: management plane must still answer identity reads
-    try {
-      const session = await safeModeSessions.openSession(ctx);
-      void session;
-      const row = await connectors.requireOwned(ctx.userId, ctx.connectionId)();
-      void row;
-      return { ok: true, detail: "management reachable" };
-    } catch (err) {
-      return { ok: false, detail: err instanceof Error ? err.message : String(err) };
-    }
-  },
+  verifyChecks: (ctx) => safeModeSessions.verifyManagement(ctx),
 });
 
 const connectorRoutes = createConnectorRoutes({ connectors, supervisor, txCoordinator, safeModeSessions, logger });

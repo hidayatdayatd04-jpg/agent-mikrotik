@@ -102,7 +102,10 @@ export function loadConfig(from: Record<string, string | undefined> = process.en
   return {
     ...env,
     isProduction,
-    useMockEmail: (!env.BREVO_SMTP_KEY || !env.BREVO_SMTP_LOGIN || !env.BREVO_SENDER_EMAIL) && !env.BREVO_API_KEY,
+    // Real OTP email requires the VERIFIED SMTP path (host/login/key + verified
+    // sender). The REST API key alone is NOT sufficient: Brevo blocks unknown
+    // IPs on the API (docs/decisions.md D-010) and sending needs a sender address.
+    useMockEmail: !env.BREVO_SMTP_KEY || !env.BREVO_SMTP_LOGIN || !env.BREVO_SENDER_EMAIL,
     useMockAnthropic: !env.ANTHROPIC_API_KEY,
     useMockOAuth: !env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET,
     trustedOrigins: env.TRUSTED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean),
