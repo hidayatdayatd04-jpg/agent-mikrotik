@@ -6,6 +6,8 @@ import { AppError } from "../lib/errors";
 import { RouterModeSchema } from "@shared/index";
 import type { ConnectorService } from "../services/connector";
 import type { McpSupervisor } from "../mcp/supervisor";
+import type { TransactionCoordinator } from "../transactions/coordinator";
+import type { Logger } from "../lib/logger";
 import type { SessionContext } from "../services/auth";
 
 const HostSchema = z
@@ -38,8 +40,38 @@ const ModeSchema = z.object({
 export function createConnectorRoutes(deps: {
   connectors: ConnectorService;
   supervisor: McpSupervisor;
+  txCoordinator: TransactionCoordinator;
+  safeModeSessions: { forget(userId: string, connectionId: string): void };
+  logger: Logger;
 }) {
   const routes = new Hono<Env>();
+
+  /**
+   * Backend cleanup on disconnect/delete: any live transaction bound to this
+   * connection is force-rolled-back (Write revoked → auto-revert) and the
+   * safe-mode child reference dropped. Never callable by the model.
+   */
+  async function cleanupTransactions(userId: string, connectionId: string) {
+    try {
+      const active = await deps.txCoordinator.activeTransactionsForRouter(
+        (await deps.connectors.requireOwned(userId, connectionId)()).routerIdentity ?? "",
+      );
+      for (const tx of active) {
+        if (tx.connectionId !== connectionId) continue;
+        if (tx.state === "active" || tx.state === "verifying" || tx.state === "preparing") {
+          const r = await deps.txCoordinator.forceRollback(tx.id, userId);
+          deps.logger.info("transaction force-rolled back on disconnect", { transactionId: tx.id, state: r.state });
+        }
+      }
+    } catch (err) {
+      deps.logger.warn("transaction cleanup on disconnect failed", {
+        connectionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      deps.safeModeSessions.forget(userId, connectionId);
+    }
+  }
 
   routes.get("/", async (c) => {
     const session = requireSession(c);
@@ -69,7 +101,9 @@ export function createConnectorRoutes(deps: {
 
   routes.post("/:id/disconnect", async (c) => {
     const session = requireSession(c);
-    // stop the supervised MCP process and revoke write
+    // stop the supervised MCP process and revoke write; any live transaction
+    // on this connection is force-rolled-back first (safe revert)
+    await cleanupTransactions(session.userId, c.req.param("id"));
     await deps.supervisor.stop(session.userId, c.req.param("id"));
     const connector = await deps.connectors.disconnect(session.userId, c.req.param("id"));
     return c.json({ connector });
@@ -91,6 +125,7 @@ export function createConnectorRoutes(deps: {
 
   routes.delete("/:id", async (c) => {
     const session = requireSession(c);
+    await cleanupTransactions(session.userId, c.req.param("id"));
     await deps.supervisor.stop(session.userId, c.req.param("id"));
     await deps.connectors.remove(session.userId, c.req.param("id"));
     return c.json({ ok: true });

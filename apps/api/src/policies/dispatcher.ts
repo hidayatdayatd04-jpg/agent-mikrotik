@@ -49,6 +49,14 @@ const FORBIDDEN_ARG_NAMES = new Set([
   "device", "target", "path", "filepath", "localpath", "tenant",
 ]);
 
+/**
+ * Safe-mode lifecycle tools are BACKEND-ONLY: only the transaction coordinator
+ * (M6 state machine) may call enable/commit/rollback. The model asking for them
+ * is always denied, whatever the mode — the model never drives commit decisions.
+ * `safe_mode_status` stays callable (read-only probe).
+ */
+const SAFE_MODE_LIFECYCLE_TOOLS = new Set(["enable_safe_mode", "commit_safe_mode", "rollback_safe_mode"]);
+
 export class PolicyDispatcher {
   constructor(
     private deps: {
@@ -107,6 +115,11 @@ export class PolicyDispatcher {
       return this.deny(snapshot, toolFqName, "TOOL_UNSUPPORTED", "Tool belum lolos review klasifikasi risiko dan tidak diizinkan.");
     }
 
+    // 3b. safe-mode lifecycle is backend-only (transaction coordinator drives it)
+    if (SAFE_MODE_LIFECYCLE_TOOLS.has(tool.rawName)) {
+      return this.deny(snapshot, toolFqName, "SAFE_MODE_UNAVAILABLE", "Tool ini hanya dikelola sistem (transaction coordinator), bukan oleh AI.");
+    }
+
     // 4. gateway tools: on read-only they can only reach read tools; the inner
     //    call is re-dispatched through check() so the effective tool+args are
     //    validated, not the outer label.
@@ -121,6 +134,13 @@ export class PolicyDispatcher {
       const innerTool = catalog.find((t) => t.fqName === innerFq);
       if (!innerTool || innerTool.risk !== "read") {
         return this.deny(snapshot, toolFqName, "WRITE_DISABLED", `Gateway tidak boleh memanggil tool non-read pada mode Read-Only.`);
+      }
+    }
+    if (tool.isGateway) {
+      // even in write mode, a gateway must never reach safe-mode lifecycle tools
+      const inner = (args as { name?: string } | null)?.name;
+      if (inner && SAFE_MODE_LIFECYCLE_TOOLS.has(inner.replace(/^.*:/, ""))) {
+        return this.deny(snapshot, toolFqName, "SAFE_MODE_UNAVAILABLE", "Tool ini hanya dikelola sistem (transaction coordinator), bukan oleh AI.");
       }
     }
 

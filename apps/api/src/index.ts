@@ -83,6 +83,9 @@ import { PolicyDispatcher } from "./policies/dispatcher";
 import { customManifests } from "@mikrotik-tools/index";
 import { auditEvents } from "./db/schema";
 import { ZodSchemaValidator } from "./policies/schema-validator";
+import { TransactionCoordinator } from "./transactions/coordinator";
+import { createSafeModeSessionFactory } from "./transactions/mcp-session";
+import { createTransactionRoutes } from "./routes/transactions";
 
 const customTools = normalizeCustomTools(customManifests());
 const catalogSource = createLiveCatalogSource({
@@ -122,7 +125,50 @@ const email: EmailSender = config.useMockEmail
 
 const auth = createAuthService(db, config, email);
 const authRoutes = createAuthRoutes({ auth, email, logger, otpSecret: config.OTP_HMAC_SECRET ?? "dev-otp", db, config });
-const connectorRoutes = createConnectorRoutes({ connectors, supervisor });
+
+// M6 transaction coordinator: backend-only safe-mode state machine.
+const safeModeSessions = createSafeModeSessionFactory({
+  supervisor,
+  logger,
+  getConnection: async (userId, connectionId) => {
+    const row = await connectors.requireOwned(userId, connectionId)();
+    const password = await connectors.decryptCredential(userId, connectionId);
+    return {
+      userId,
+      connectionId,
+      spec: {
+        host: row.host,
+        port: row.port,
+        username: row.username,
+        password,
+        hostKeyFingerprint: row.hostKeyFingerprint,
+      },
+    };
+  },
+});
+
+const txCoordinator = new TransactionCoordinator({
+  db,
+  logger,
+  maxActionsPerTransaction: config.MAX_ACTIONS_PER_TRANSACTION,
+  openSession: (ctx) => safeModeSessions.openSession(ctx),
+  verifyChecks: async (ctx) => {
+    // pre-commit read-only health probe on the SAME child that holds the
+    // safe-mode window: management plane must still answer identity reads
+    try {
+      const session = await safeModeSessions.openSession(ctx);
+      void session;
+      const row = await connectors.requireOwned(ctx.userId, ctx.connectionId)();
+      void row;
+      return { ok: true, detail: "management reachable" };
+    } catch (err) {
+      return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+    }
+  },
+});
+
+const connectorRoutes = createConnectorRoutes({ connectors, supervisor, txCoordinator, safeModeSessions, logger });
+const transactionRoutes = createTransactionRoutes({ coordinator: txCoordinator, connectors, db, logger });
 
 const app = new Hono<HonoEnv>();
 
@@ -139,6 +185,7 @@ app.use(async (c, next) => {
 
 app.route("/api/auth", authRoutes);
 app.route("/api/connectors", connectorRoutes);
+app.route("/api/transactions", transactionRoutes);
 
 app.onError((err, c) => {
   const log = c.get("logger");

@@ -239,6 +239,38 @@ describe("dispatcher re-checks", () => {
     if (!r.allowed) expect(r.code).toBe("SAFE_MODE_UNAVAILABLE");
   });
 
+  test("safe-mode lifecycle tools are backend-only — model calls always denied", async () => {
+    const liveWrite = { mode: "write" as const, version: 3 };
+    const safeModeCatalog: NormalizedTool[] = [
+      ...catalog,
+      ...normalizeUpstreamTools(
+        [
+          { name: "enable_safe_mode", description: "enable safe mode", annotations: { readOnlyHint: false } },
+          { name: "commit_safe_mode", description: "commit safe mode", annotations: { readOnlyHint: false } },
+          { name: "rollback_safe_mode", description: "rollback safe mode", annotations: { readOnlyHint: false } },
+          { name: "safe_mode_status", description: "safe mode status", annotations: { readOnlyHint: true } },
+        ],
+        [{ name: "safe_mode_status" }],
+        "upstream-mikrotik",
+        "mt",
+      ),
+    ];
+    const d = makeDispatcher({ getMode: async () => liveWrite }, safeModeCatalog);
+    const snap = { ...snapshot, mode: "write" as const, transactionState: "active" as const };
+    for (const tool of ["mt:enable_safe_mode", "mt:commit_safe_mode", "mt:rollback_safe_mode"]) {
+      const r = await d.check({ session: { userId: "u1" }, snapshot: snap, toolFqName: tool, args: {} });
+      expect(r.allowed).toBe(false);
+      if (!r.allowed) expect(r.code).toBe("SAFE_MODE_UNAVAILABLE");
+    }
+    // safe_mode_status remains a legitimate read probe for the model
+    const st = await d.check({ session: { userId: "u1" }, snapshot: snap, toolFqName: "mt:safe_mode_status", args: {} });
+    expect(st.allowed).toBe(true);
+    // gateway cannot smuggle lifecycle tools in write mode either
+    const gw = await d.check({ session: { userId: "u1" }, snapshot: snap, toolFqName: "mt:invoke_tool", args: { name: "commit_safe_mode" } });
+    expect(gw.allowed).toBe(false);
+    if (!gw.allowed) expect(gw.code).toBe("SAFE_MODE_UNAVAILABLE");
+  });
+
   test("audit records denials with codes", async () => {
     AUDIT.length = 0;
     const d = makeDispatcher({ getMode: async () => live }, catalog);

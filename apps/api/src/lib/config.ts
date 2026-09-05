@@ -69,6 +69,7 @@ export const EnvSchema = z.object({
   AGENT_MAX_STEPS: int(12, 1, 64),
   AGENT_MAX_TOOL_CALLS: int(30, 1, 128),
   AGENT_RUN_TIMEOUT_MS: int(120000, 5000, 600000),
+  MAX_ACTIONS_PER_TRANSACTION: int(20, 1, 200),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
