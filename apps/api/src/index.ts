@@ -76,6 +76,46 @@ const connectors = createConnectorService({
   log: (msg, data) => logger.info(msg, data),
 });
 
+// Policy dispatcher (M5): single execution path for all tool calls.
+import { normalizeCustomTools } from "./policies/normalize";
+import { createLiveCatalogSource } from "./policies/live-catalog";
+import { PolicyDispatcher } from "./policies/dispatcher";
+import { customManifests } from "@mikrotik-tools/index";
+import { auditEvents } from "./db/schema";
+import { ZodSchemaValidator } from "./policies/schema-validator";
+
+const customTools = normalizeCustomTools(customManifests());
+const catalogSource = createLiveCatalogSource({
+  // system-level children: the supervisor respawns per (user,connection) specs
+  // with the right mode when agent runs request them; these cover catalog
+  // discovery for policy decisions.
+  getFullChild: () => supervisor.getOrSpawn({ connectionId: "catalog-full", userId: "system", host: "catalog", port: 22, username: "catalog", password: null, hostKeyFingerprint: null, readOnly: false }),
+  getReadOnlyChild: () => supervisor.getOrSpawn({ connectionId: "catalog-readonly", userId: "system", host: "catalog", port: 22, username: "catalog", password: null, hostKeyFingerprint: null, readOnly: true }),
+  rosettaToolNames: async () => {
+    const tools = (await rosetta.listTools()) as { name: string; description?: string; inputSchema?: unknown }[];
+    return tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+  },
+  customTools,
+});
+
+const dispatcher = new PolicyDispatcher({
+  modeSource: {
+    getMode: (userId, connectionId) => connectors.getMode(userId, connectionId),
+  },
+  catalog: catalogSource,
+  validator: new ZodSchemaValidator(),
+  audit: (event) => {
+    void db
+      .insert(auditEvents)
+      .values({
+        userId: event.userId === "system" ? null : event.userId,
+        action: `tool.${event.decision}`,
+        metadata: { tool: event.tool, code: event.code ?? null },
+      })
+      .catch((err: unknown) => logger.error("audit insert failed", { message: err instanceof Error ? err.message : String(err) }));
+  },
+});
+
 const email: EmailSender = config.useMockEmail
   ? new MockEmailSender((m, d) => logger.warn(m, d))
   : new MockEmailSender((m) => logger.warn(m)); // Brevo adapter added in M3 wiring when API key present
@@ -91,6 +131,7 @@ app.use(async (c, next) => {
   c.set("config", config);
   c.set("logger", logger);
   c.set("db", db);
+  c.set("dispatcher", dispatcher);
   const token = getCookie(c, SESSION_COOKIE);
   c.set("session", token ? await auth.resolveSession(token) : null);
   await next();

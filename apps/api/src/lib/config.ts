@@ -1,4 +1,8 @@
 import { z } from "zod";
+import { resolve } from "node:path";
+
+// apps/api/src/lib → repo root is three levels up
+const DEFAULT_ROSETTA_DIR = resolve(import.meta.dir, "../../../../tooling/corpus");
 
 const int = (def: number, min: number, max: number) =>
   z
@@ -56,7 +60,7 @@ export const EnvSchema = z.object({
   UPLOAD_MAX_FILES_PER_MESSAGE: int(4, 1, 16),
 
   MCP_BUN_EXECUTABLE: z.string().default("bun"),
-  ROSETTA_DATA_DIR: z.string().default("../../tooling/corpus"),
+  ROSETTA_DATA_DIR: z.string().default(DEFAULT_ROSETTA_DIR),
   ROUTER_ALLOWED_CIDRS: z.string().default(""),
   SSH_CONNECT_TIMEOUT_MS: int(10000, 500, 120000),
   MCP_IDLE_TIMEOUT_SECONDS: int(900, 30, 86400),

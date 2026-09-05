@@ -1,16 +1,28 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "types": ["bun"],
+    "types": [
+      "bun"
+    ],
     "composite": true,
     "declaration": true,
     "noEmit": true,
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "skipLibCheck": true,
     "paths": {
-      "@shared/*": ["../../packages/shared/src/*"],
-      "@mikrotik-tools/*": ["../../packages/mikrotik-tools/src/*"]
+      "@shared/*": [
+        "../../packages/shared/src/*"
+      ],
+      "@mikrotik-tools/*": [
+        "../../packages/mikrotik-tools/src/*"
+      ]
     }
   },
-  "include": ["src", "../../packages/shared/src"]
+  "include": [
+    "src",
+    "../../packages/shared/src",
+    "../../packages/mikrotik-tools/src"
+  ]
 }
