@@ -10,3 +10,7 @@ coverage/
 playwright-report/
 test-results/
 .drizzle/
+tooling/package/
+tooling/spike/node_modules/
+tooling/corpus/
+*.tgz
