@@ -1,0 +1,75 @@
+import { describe, expect, test } from "bun:test";
+import {
+  sealSecret,
+  openSecret,
+  envKeyRing,
+  hmacDigest,
+  constantTimeEquals,
+  type SealedSecret,
+} from "./crypto";
+
+const KEY = Buffer.alloc(32, 7).toString("base64");
+const OTHER_KEY = Buffer.alloc(32, 9).toString("base64");
+
+const ring = envKeyRing({ 1: KEY }, 1);
+const ring2 = envKeyRing({ 1: KEY, 2: OTHER_KEY }, 2);
+
+describe("sealSecret/openSecret round-trip", () => {
+  test("round-trips with same owner binding", () => {
+    const sealed = sealSecret(ring, "router-password-123", "user-1", "conn-1");
+    expect(sealed.keyVersion).toBe(1);
+    const opened = openSecret(ring, sealed, "user-1", "conn-1");
+    expect(opened).toBe("router-password-123");
+  });
+
+  test("rejects ciphertext moved to another user", () => {
+    const sealed = sealSecret(ring, "secret", "user-1", "conn-1");
+    expect(openSecret(ring, sealed, "user-2", "conn-1")).toBeNull();
+  });
+
+  test("rejects ciphertext moved to another connection", () => {
+    const sealed = sealSecret(ring, "secret", "user-1", "conn-1");
+    expect(openSecret(ring, sealed, "user-1", "conn-2")).toBeNull();
+  });
+
+  test("rejects tampered ciphertext", () => {
+    const sealed = sealSecret(ring, "secret", "user-1", "conn-1");
+    const bytes = Buffer.from(sealed.ciphertext, "base64");
+    bytes[0]! ^= 0xff;
+    const tampered: SealedSecret = { ...sealed, ciphertext: bytes.toString("base64") };
+    expect(openSecret(ring, tampered, "user-1", "conn-1")).toBeNull();
+  });
+
+  test("rejects wrong key", () => {
+    const sealed = sealSecret(ring, "secret", "user-1", "conn-1");
+    const wrongRing = envKeyRing({ 1: OTHER_KEY }, 1);
+    expect(openSecret(wrongRing, sealed, "user-1", "conn-1")).toBeNull();
+  });
+
+  test("old key version still decryptable after rotation (v1 data under ring with v1+v2)", () => {
+    const sealedV1 = sealSecret(ring, "old-secret", "user-1", "conn-1");
+    expect(sealedV1.keyVersion).toBe(1);
+    expect(openSecret(ring2, sealedV1, "user-1", "conn-1")).toBe("old-secret");
+    const sealedV2 = sealSecret(ring2, "new-secret", "user-1", "conn-1");
+    expect(sealedV2.keyVersion).toBe(2);
+  });
+
+  test("missing key version returns null, not throw", () => {
+    const sealed = sealSecret(ring, "secret", "user-1", "conn-1");
+    const noKeyRing = envKeyRing({}, 1);
+    expect(openSecret(noKeyRing, sealed, "user-1", "conn-1")).toBeNull();
+  });
+});
+
+describe("hmacDigest / constantTimeEquals", () => {
+  test("digest is deterministic and keyed", () => {
+    expect(hmacDigest("k1", "a", "b")).toBe(hmacDigest("k1", "a", "b"));
+    expect(hmacDigest("k1", "a", "b")).not.toBe(hmacDigest("k2", "a", "b"));
+    expect(hmacDigest("k1", "a", "b")).not.toBe(hmacDigest("k1", "b", "a"));
+  });
+  test("constantTimeEquals", () => {
+    expect(constantTimeEquals("abc", "abc")).toBe(true);
+    expect(constantTimeEquals("abc", "abd")).toBe(false);
+    expect(constantTimeEquals("abc", "abcd")).toBe(false);
+  });
+});

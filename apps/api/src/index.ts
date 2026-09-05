@@ -4,9 +4,12 @@ import { createLogger } from "./lib/logger";
 import { AppError, errorBody, statusForCode } from "./lib/errors";
 import { randomUUID } from "node:crypto";
 import type { Env as HonoEnv } from "./types";
+import { createDb } from "./db";
+import { checkDatabase } from "./db/health";
 
 const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL);
+const db = createDb(config.DATABASE_URL);
 
 const app = new Hono<HonoEnv>();
 
@@ -14,6 +17,7 @@ app.use(async (c, next) => {
   c.set("requestId", randomUUID());
   c.set("config", config);
   c.set("logger", logger);
+  c.set("db", db);
   await next();
 });
 
@@ -37,12 +41,15 @@ app.notFound((c) => {
 app.get("/health/live", (c) => c.json({ status: "ok" }));
 
 app.get("/health/ready", async (c) => {
-  return c.json({
-    status: "ok",
-    checks: {
-      database: "not-configured",
+  const database = await checkDatabase(c.get("db"));
+  const ready = database === "ok";
+  return c.json(
+    {
+      status: ready ? "ok" : "degraded",
+      checks: { database },
     },
-  });
+    ready ? 200 : 503,
+  );
 });
 
 app.get("/api/ping", (c) => c.json({ pong: true, requestId: c.get("requestId") }));
