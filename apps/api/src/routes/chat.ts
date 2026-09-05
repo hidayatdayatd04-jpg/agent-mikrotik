@@ -40,9 +40,33 @@ export function createChatRoutes(deps: {
   buildInstruction: typeof buildSystemInstruction;
   /** Loads attachment content for the AI context (ownership pre-checked). */
   loadAttachmentContent: (input: { userId: string; attachmentId: string }) => Promise<{ kind: "image" | "pdf" | "text" | "unsupported"; name: string; mime: string; bytes: Buffer } | null>;
+  /** Removes one attachment object from storage (B2). Non-fatal when missing. */
+  removeAttachmentObject: (input: { userId: string; objectKey: string }) => Promise<void>;
   limits: { maxSteps: number; maxToolCalls: number; runTimeoutMs: number; maxTokens: number };
+  /** Chat run rate limit per user (M10): tokens, ms window. */
+  runRateLimit: { maxRuns: number; windowMs: number };
 }) {
   const routes = new Hono<Env>();
+
+  // in-process sliding window per user (M10): simple and restart-safe enough
+  // for the single-node dev deployment; a shared store is a production TODO
+  const runTimesByUser = new Map<string, number[]>();
+  function enforceRunRateLimit(userId: string) {
+    const now = Date.now();
+    const cutoff = now - deps.runRateLimit.windowMs;
+    const times = (runTimesByUser.get(userId) ?? []).filter((t) => t > cutoff);
+    if (times.length >= deps.runRateLimit.maxRuns) {
+      throw new AppError("RATE_LIMITED", `Batas ${deps.runRateLimit.maxRuns} run chat per ${Math.round(deps.runRateLimit.windowMs / 1000)} detik. Tunggu sebentar.`, 429);
+    }
+    times.push(now);
+    runTimesByUser.set(userId, times);
+    if (runTimesByUser.size > 10_000) {
+      // prune cold entries to bound memory
+      for (const [k, v] of runTimesByUser) {
+        if (v.every((t) => t <= cutoff)) runTimesByUser.delete(k);
+      }
+    }
+  }
 
   const CreateSchema = z.object({
     title: z.string().min(1).max(200).optional(),
@@ -127,8 +151,17 @@ export function createChatRoutes(deps: {
     if (active.length > 0) {
       throw new AppError("RUN_ALREADY_ACTIVE", "Ada run aktif pada percakapan ini; batalkan dulu.", 409);
     }
+    // M10: remove every attachment object owned by this conversation from
+    // storage BEFORE dropping the DB rows (cascade would orphan the objects)
+    const attRows = await deps.db
+      .select({ objectKey: attachments.objectKey })
+      .from(attachments)
+      .where(and(eq(attachments.conversationId, conv.id), eq(attachments.userId, session.userId)));
+    for (const row of attRows) {
+      await deps.removeAttachmentObject({ userId: session.userId, objectKey: row.objectKey });
+    }
     await deps.db.delete(conversations).where(eq(conversations.id, conv.id));
-    return c.json({ ok: true });
+    return c.json({ ok: true, objectsRemoved: attRows.length });
   });
 
   routes.get("/api/conversations/:id/messages", async (c) => {
@@ -149,6 +182,7 @@ export function createChatRoutes(deps: {
     const session = requireSession(c);
     const conv = await requireConversation(session.userId, c.req.param("id"));
     const input = c.req.valid("json");
+    enforceRunRateLimit(session.userId);
 
     // idempotency: same conversation + key returns the existing run
     const [existing] = await deps.db

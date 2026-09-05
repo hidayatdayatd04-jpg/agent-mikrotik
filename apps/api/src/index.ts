@@ -262,12 +262,20 @@ const chatRoutes = createChatRoutes({
       return null;
     }
   },
+  removeAttachmentObject: async (input) => {
+    if (!storage) return;
+    // object keys are server-generated under attachments/{userId}/ — the
+    // userId scoping here is defense-in-depth against a forged key
+    if (!input.objectKey.startsWith(`attachments/${input.userId}/`)) return;
+    await storage.remove(input.objectKey);
+  },
   limits: {
     maxSteps: config.AGENT_MAX_STEPS,
     maxToolCalls: config.AGENT_MAX_TOOL_CALLS,
     runTimeoutMs: config.AGENT_RUN_TIMEOUT_MS,
     maxTokens: 4096,
   },
+  runRateLimit: { maxRuns: 20, windowMs: 60_000 },
 });
 
 const app = new Hono<HonoEnv>();
