@@ -6,10 +6,21 @@ import { randomUUID } from "node:crypto";
 import type { Env as HonoEnv } from "./types";
 import { createDb } from "./db";
 import { checkDatabase } from "./db/health";
+import { createAuthService, MockEmailSender, type EmailSender } from "./services/auth";
+import { createAuthRoutes } from "./routes/auth";
+import { getCookie } from "hono/cookie";
+import { SESSION_COOKIE } from "./middleware/session";
 
 const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL);
 const db = createDb(config.DATABASE_URL);
+
+const email: EmailSender = config.useMockEmail
+  ? new MockEmailSender((m, d) => logger.warn(m, d))
+  : new MockEmailSender((m) => logger.warn(m)); // Brevo adapter added in M3 wiring when API key present
+
+const auth = createAuthService(db, config, email);
+const authRoutes = createAuthRoutes({ auth, email, logger, otpSecret: config.OTP_HMAC_SECRET ?? "dev-otp", db, config });
 
 const app = new Hono<HonoEnv>();
 
@@ -18,8 +29,12 @@ app.use(async (c, next) => {
   c.set("config", config);
   c.set("logger", logger);
   c.set("db", db);
+  const token = getCookie(c, SESSION_COOKIE);
+  c.set("session", token ? await auth.resolveSession(token) : null);
   await next();
 });
+
+app.route("/api/auth", authRoutes);
 
 app.onError((err, c) => {
   const log = c.get("logger");
@@ -65,4 +80,5 @@ logger.info(`starting api server on :${port}`, {
 export default {
   port,
   fetch: app.fetch,
+  app,
 };

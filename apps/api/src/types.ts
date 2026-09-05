@@ -1,6 +1,7 @@
 import type { Config } from "./lib/config";
 import type { Logger } from "./lib/logger";
 import type { Database } from "./db";
+import type { SessionContext } from "./services/auth";
 
 export interface Env {
   Variables: {
@@ -8,5 +9,6 @@ export interface Env {
     config: Config;
     logger: Logger;
     db: Database;
+    session: SessionContext | null;
   };
 }
