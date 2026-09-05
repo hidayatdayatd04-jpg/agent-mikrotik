@@ -87,3 +87,13 @@ Monorepo Bun workspaces sesuai plan.md §5: `apps/web`, `apps/api`, `packages/sh
 **Bukti:** E2E dengan mock deterministik + fake provider OpenAI-compatible lokal (ports 3998/3999): auto-fetch [test-model-a,b], key salah → UPSTREAM_AUTH_FAILED, tool loop penuh `docs:routeros_search` Rosetta nyata ("safe mode" → halaman manual MikroTik Configuration Management) → jawaban final → run.completed usage; SSE replay + heartbeat + snapshot + cancel + idempotency resumed:true; 17 unit test agent (model-fetch 6, provider-settings 7, loop 4) + total 87 test API, typecheck + lint bersih.
 
 **Batas jujur:** Gemini & OpenRouter nyata BELUM diuji — user belum memberi API key provider; bukti saat ini via adapter yang sama (protokol OpenAI-compatible) terhadap fake provider lokal. `.env.example` tidak berisi key nyata.
+
+## D-012 — Storage B2 memakai NATIVE B2 API, bukan S3-compatible (AWS SDK ditolak untuk keyID Master)
+
+**Tanggal:** 5 Sep 2026 (M8). Saat implementasi upload, `@aws-sdk/client-s3` (S3-compatible endpoint B2 `s3.us-west-004.backblazeb2.com`) menolak kredensial dengan "Malformed Access Key Id" — parser SigV4 AWS tidak menerima keyID Master B2 yang berformat 12 karakter hex (`b7b05c52b0a4`), berbeda dengan format keyID aplikasi S3 B2 (`00accountId_hex_00keyName`). Key non-master `mikrotik-key` sendiri sudah terbukti 401 invalid di M6 (D-010).
+
+**Percobaan & bukti:** keyID Master yang sama AUTHENTIKASI SEMPURNA via native B2 JSON API: `b2_authorize_account` 200 → `b2_list_buckets` (bucket `mikrotik-agent` = `bb37ebf0b56c7502ab000a14`) → `b2_get_upload_url` 200 → upload 200. Karena itu AWS SDK di-uninstall dan `services/storage.ts` ditulis di atas native B2 API: authorize (cache token 60 menit) → get_upload_url per objek → upload dengan `X-Bz-Content-Sha1`; download via `downloadUrl/file/{bucket}/{key}` + Authorization header (bucket tetap private); delete via list_file_names → delete_file_version.
+
+**Keputusan:** Native B2 API menjadi jalur storage (satu-satunya yang terbukti bekerja dengan kredensial yang user miliki). Tidak ada presigned URL ke browser — upload/download semua di-proxy backend sehingga ownership check per-request tetap berlaku.
+
+**Dampak:** M8 upload/download/delete E2E nyata ke bucket produksi terbukti; catatan di plan.md M8 diperbarui. Jika kelak user membuat application key S3 yang valid, migrasi ke S3-compatible bisa jadi optimasi (streaming multipart) tanpa mengubah kontrak route.

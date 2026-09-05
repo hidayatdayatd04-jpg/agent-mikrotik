@@ -82,7 +82,8 @@ import { normalizeCustomTools } from "./policies/normalize";
 import { createLiveCatalogSource } from "./policies/live-catalog";
 import { PolicyDispatcher } from "./policies/dispatcher";
 import { customManifests } from "@mikrotik-tools/index";
-import { auditEvents } from "./db/schema";
+import { auditEvents, attachments } from "./db/schema";
+import { and, eq } from "drizzle-orm";
 import { ZodSchemaValidator } from "./policies/schema-validator";
 import { TransactionCoordinator } from "./transactions/coordinator";
 import { createSafeModeSessionFactory } from "./transactions/mcp-session";
@@ -176,6 +177,8 @@ import { RunEventHub } from "./agent/hub";
 import { createToolExecutor } from "./agent/tool-executor";
 import { createAiProviderRoutes } from "./routes/ai-provider";
 import { createChatRoutes } from "./routes/chat";
+import { createAttachmentRoutes } from "./routes/attachments";
+import { createStorageService, detectContentKind } from "./services/storage";
 
 const providerSettings = createProviderSettingsService({ db, keyRing, logger });
 const executeTool = createToolExecutor({ supervisor, connectors, logger });
@@ -213,6 +216,24 @@ const agentLoop = createAgentLoop({
 const connectorRoutes = createConnectorRoutes({ connectors, supervisor, txCoordinator, safeModeSessions, logger });
 const transactionRoutes = createTransactionRoutes({ coordinator: txCoordinator, connectors, db, logger });
 const aiProviderRoutes = createAiProviderRoutes({ providers: providerSettings, logger });
+const storage = config.B2_KEY_ID && config.B2_APPLICATION_KEY && config.B2_BUCKET && config.B2_ENDPOINT && config.B2_REGION
+  ? createStorageService({
+      config: {
+        keyId: config.B2_KEY_ID,
+        applicationKey: config.B2_APPLICATION_KEY,
+        bucket: config.B2_BUCKET,
+        region: config.B2_REGION,
+        endpoint: config.B2_ENDPOINT,
+      },
+      logger,
+    })
+  : null;
+const attachmentRoutes = createAttachmentRoutes({
+  db,
+  logger,
+  storage,
+  limits: { maxBytes: config.UPLOAD_MAX_BYTES, maxFilesPerMessage: config.UPLOAD_MAX_FILES_PER_MESSAGE },
+});
 const chatRoutes = createChatRoutes({
   db,
   logger,
@@ -225,6 +246,22 @@ const chatRoutes = createChatRoutes({
   executeTool,
   executeDocsTool,
   buildInstruction: buildSystemInstruction,
+  loadAttachmentContent: async (input) => {
+    if (!storage) return null;
+    const [row] = await db
+      .select()
+      .from(attachments)
+      .where(and(eq(attachments.id, input.attachmentId), eq(attachments.userId, input.userId)))
+      .limit(1);
+    if (!row || row.status !== "ready") return null;
+    try {
+      const obj = await storage.get(row.objectKey);
+      const sniff = detectContentKind({ mimeType: row.contentType, originalName: row.originalName, head: obj.body.subarray(0, 512) });
+      return { kind: sniff.ok ? sniff.kind : "unsupported", name: row.originalName, mime: row.contentType, bytes: obj.body };
+    } catch {
+      return null;
+    }
+  },
   limits: {
     maxSteps: config.AGENT_MAX_STEPS,
     maxToolCalls: config.AGENT_MAX_TOOL_CALLS,
@@ -250,6 +287,7 @@ app.route("/api/auth", authRoutes);
 app.route("/api/connectors", connectorRoutes);
 app.route("/api/transactions", transactionRoutes);
 app.route("/api/ai-provider", aiProviderRoutes);
+app.route("/api/attachments", attachmentRoutes);
 app.route("/", chatRoutes);
 
 app.onError((err, c) => {

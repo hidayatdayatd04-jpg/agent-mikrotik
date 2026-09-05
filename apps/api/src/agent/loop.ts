@@ -224,8 +224,12 @@ export function createAgentLoop(deps: AgentRunDeps) {
         .limit(40);
       const chatHistory: ChatMessage[] = [{ role: "system", content: input.systemInstruction }];
       for (const m of history.slice(-24)) {
-        if (m.role === "user") chatHistory.push({ role: "user", content: String((m.content as { text?: string })?.text ?? "") });
-        else if (m.role === "assistant") chatHistory.push({ role: "assistant", content: String((m.content as { text?: string })?.text ?? "") });
+        if (m.role === "user") {
+          const content = m.content as { text?: string; context?: string };
+          chatHistory.push({ role: "user", content: String(content?.text ?? "") + (content?.context ?? "") });
+        } else if (m.role === "assistant") {
+          chatHistory.push({ role: "assistant", content: String((m.content as { text?: string })?.text ?? "") });
+        }
       }
 
       // no router bound → documentation tools only; router tools would fail
