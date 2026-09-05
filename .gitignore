@@ -6,7 +6,8 @@ dist/
 *.log
 corpus/
 .rosetta/
-coverage/
+**/coverage/
+!tooling/coverage/
 playwright-report/
 test-results/
 .drizzle/

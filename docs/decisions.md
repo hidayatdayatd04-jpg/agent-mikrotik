@@ -43,3 +43,19 @@ Postgres lokal (Docker) untuk Neon di dev; MinIO untuk B2; mock deterministik un
 ## D-007 — Workspace struktur & lint import
 
 Monorepo Bun workspaces sesuai plan.md §5: `apps/web`, `apps/api`, `packages/shared`, `packages/mikrotik-tools`, `tooling/`, `docs/`. Batas import (M1): `apps/web` dan `packages/shared` dilarang mengimpor modul `apps/api` backend, ORM, supervisor, atau konfigurasi secret — ditegakkan dengan lint rule + review.
+
+## D-008 — Tool tambahan diekspos backend, bukan fork MCP upstream
+
+**Keputusan:** Gap inventaris §4.1 (bonding, neighbor discovery, MPLS, LTE, GPS, SMB, SNMP — semuanya operasi read-only) ditutup dengan tool custom di `packages/mikrotik-tools` (namespace `custom_*`), diekspos oleh backend ke katalog agent — BUKAN dengan fork `@usex/mikrotik-mcp`.
+
+**Alasan:** Semua gap adalah operasi `list/get`; `invoke_tool` upstream tetap menjadi jalur untuk tool upstream. Fork menambah beban pemeliharaan (patch, rebuild, upgrade) tanpa keuntungan karena tidak ada perilaku upstream yang perlu diubah. Sebaliknya, tool custom memakai `RouterOsExecutor` yang di-inject backend (sesi SSH milik connector; M6 mengarahkan executor ke sesi Safe Mode saat transaksi) sehingga jalur eksekusi, policy, audit, dan rate-limit tunggal terjamin.
+
+**Dampak:** Katalog gabungan = upstream (dari `tools/list` runtime) + `custom_*` (manifest statis). Bila upstream kelak menambah tool serupa, migrasi lewat uji kesetaraan di dispatcher, bukan routing otomatis.
+
+## D-009 — Coverage dihitung per operasi (menu × operasi), bukan per tool
+
+**Keputusan:** `tooling/routeros-coverage.json` memetakan cakupan per (menu, operasi) — list/get, add, set, remove, enable, disable, move, monitor, reset/reboot, export, import — diekstraksi dari command path di deskripsi/schema katalog upstream plus alias deskripsi untuk tool yang path-nya tidak literal (mis. `get_wireless_registration_table` memakai placeholder `<auto-detected path>`).
+
+**Alasan:** Nama tool serupa tidak membuktikan operasi tercakup (plan.md §4.1); pengukuran per operasi memberi denominator jujur. Menu tanpa tool upstream ditandai gap-open sampai tool custom menutupnya; menu yang memang tidak ada di router target diklasifikasi `unsupported-on-target` saat runtime via capability check (`TOOL_UNSUPPORTED`), bukan dihapus dari denominator.
+
+**Dampak:** Snapshot M4B: 489 operasi, 482 covered-existing, 7 covered-custom, 0 gap-open. Mutasi nyata ke router tetap `gap-open` secara bukti-lab sampai router fisik tersedia (kejujuran pengujian, bukan keberadaan tool).
