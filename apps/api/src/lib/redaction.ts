@@ -9,7 +9,6 @@ export function redactText(text: string): string {
   let out = text;
   for (const { pattern } of SENSITIVE_PATTERNS) {
     out = out.replace(pattern, (match) => {
-      const eq = match.indexOf(match.includes("=") ? "=" : ":");
       const sep = match.includes("=") ? "=" : ":";
       const idx = match.indexOf(sep);
       return `${match.slice(0, idx + 1)} ${REDACTED}`;

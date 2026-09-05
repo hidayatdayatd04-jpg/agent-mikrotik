@@ -6,13 +6,6 @@ import type { Database } from "../db";
 
 export type DbLike = Database;
 
-interface BucketRow {
-  keyHash: string;
-  windowStart: Date;
-  count: number;
-  expiresAt: Date;
-}
-
 /**
  * Persistent fixed-window rate limiter. Atomic single-statement upsert so
  * concurrent requests cannot slip past the limit.

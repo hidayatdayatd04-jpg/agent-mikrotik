@@ -1,4 +1,3 @@
-import { ApiErrorCodes } from "@shared/index";
 import type { ApiErrorCode } from "@shared/index";
 import type { Context } from "hono";
 

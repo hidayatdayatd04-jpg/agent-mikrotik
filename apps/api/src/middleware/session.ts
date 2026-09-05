@@ -1,11 +1,10 @@
-import { getCookie, setCookie, deleteCookie } from "hono/cookie";
-import type { Env } from "../types";
+import { getCookie } from "hono/cookie";
 import { AppError } from "../lib/errors";
 import type { SessionContext } from "../services/auth";
 
 export const SESSION_COOKIE = "session";
 
-export function sessionFromCookie<T extends Env>(c: { req: unknown; get: (k: "session") => SessionContext | undefined }): SessionContext {
+export function sessionFromCookie(c: { req: unknown; get: (k: "session") => SessionContext | undefined }): SessionContext {
   const session = c.get("session");
   if (!session) throw new AppError("AUTH_REQUIRED", "Silakan masuk terlebih dahulu.", 401);
   return session;

@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { createDb, type Database } from "../db";
 import { loadConfig, type Config } from "../lib/config";
-import { createAuthService, MockEmailSender, type CreatedSession } from "./auth";
+import { createAuthService, type CreatedSession } from "./auth";
 import { eq } from "drizzle-orm";
 import { users, otpChallenges } from "../db/schema";
 import { OtpError } from "./otp-error";
@@ -34,7 +34,6 @@ beforeAll(async () => {
     return;
   }
   config = cfg;
-  const mailer = new MockEmailSender((_, __) => {});
   auth = createAuthService(db, cfg, {
     sendOtp: async (to, code) => {
       capturedCodes.push({ email: to, code });

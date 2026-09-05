@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMe, useLogout } from "./auth-hooks";
-import type { SessionUser } from "@shared/index";
+import { useMe } from "./auth-hooks";
 
 export function useAuthState() {
   const me = useMe();

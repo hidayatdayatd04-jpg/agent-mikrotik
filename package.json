@@ -1,5 +1,6 @@
 {
   "name": "agent-mikrotik",
+  "type": "module",
   "private": true,
   "workspaces": [
     "apps/*",
@@ -17,9 +18,12 @@
     "db:migrate": "bun run --cwd apps/api db:migrate"
   },
   "devDependencies": {
+    "@eslint/js": "9.36.0",
     "@playwright/test": "1.55.1",
+    "concurrently": "9.2.1",
     "eslint": "9.36.0",
     "typescript": "5.9.2",
-    "concurrently": "9.2.1"
-  }
+    "typescript-eslint": "8"
+  },
+  "": null
 }

@@ -9,6 +9,7 @@ import type { AuthService, EmailSender, SessionContext } from "../services/auth"
 import { OtpError } from "../services/otp-error";
 import { createRateLimiter } from "../services/auth-core";
 import type { Logger } from "../lib/logger";
+import { timingSafeEqual } from "node:crypto";
 
 const EmailSchema = z.string().email().max(320);
 
@@ -233,7 +234,6 @@ function constantTimeEq(a: string, b: string): boolean {
   const bufB = Buffer.from(b, "utf8");
   if (bufA.length !== bufB.length) return false;
   // timing-safe compare
-  const { timingSafeEqual } = require("node:crypto") as typeof import("node:crypto");
   return timingSafeEqual(bufA, bufB);
 }
 

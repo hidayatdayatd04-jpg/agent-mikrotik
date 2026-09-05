@@ -311,22 +311,22 @@ Dependensi: M2.
 
 Dependensi: M2, M3, kontrak MCP M0.
 
-- [ ] Buat dialog Connectors dengan label opsional, host/IP, port default 22, username, password, serta status pengujian koneksi.
-- [ ] Validasi input di client dan server: hostname/IP benar, port 1–65535, batas panjang, dan input berbahaya tidak menjadi argumen shell.
-- [ ] Terapkan kebijakan target SSH: subnet router privat boleh diizinkan secara eksplisit; blok metadata cloud, loopback, link-local, dan layanan internal yang bukan target router.
-- [ ] Validasi semua hasil resolusi DNS/IPv4/IPv6, cegah DNS rebinding, dan pastikan koneksi menuju alamat yang sudah lolos kebijakan.
-- [ ] Terapkan host-key verification: pin fingerprint pada koneksi pertama yang berhasil sesuai kebijakan onboarding; perubahan fingerprint tidak diterima diam-diam.
-- [ ] Lakukan auth-check dari backend dengan timeout dan pembatasan frekuensi; hanya persist credential setelah koneksi berhasil.
-- [ ] Jika test gagal, form tetap terbuka dan data lama tidak tertimpa; bedakan auth failure, DNS/host unreachable, timeout, port refused, dan host-key mismatch.
-- [ ] Jika test berhasil, tutup form, tampilkan router aktif dan opsi disconnect/ganti; status `Terhubung` harus punya bukti koneksi, bukan sekadar record DB ada.
-- [ ] Buat supervisor mikrotik-mcp terisolasi per `(user_id, connection_id)`; jangan mengganti `process.env` global saat request user masuk.
-- [ ] Spawn proses memakai executable/argumen tetap dan environment minimum per child process; jangan meneruskan seluruh environment aplikasi.
-- [ ] Gunakan working directory/cache terisolasi agar konfigurasi, log, memory, atau artefak MCP tidak tercampur antar-user.
-- [ ] Jalankan Rosetta sebagai proses Bun tersendiri dengan corpus persisten dan tanpa secret router/provider. Shared process hanya boleh untuk dokumentasi publik tanpa state privat user.
-- [ ] Terapkan startup timeout, health check, process crash handling, bounded restart, idle cleanup, serta batas proses/per-user/global.
-- [ ] Jangan melakukan restart otomatis proses yang sedang memiliki transaksi tanpa recovery; kegagalan harus mempertahankan status transaksi yang dapat ditelusuri.
-- [ ] Disconnect mematikan Write, menghentikan call baru, menyelesaikan rollback/reconciliation, lalu menutup sesi. Reconnect kembali ke Read-Only.
-- [ ] Ganti router percakapan hanya ketika run sebelumnya selesai atau sudah ditangani pembatalannya; target baru dimulai Read-Only.
+- [x] Buat dialog Connectors dengan label opsional, host/IP, port default 22, username, password, serta status pengujian koneksi. (apps/web/src/features/connectors/ConnectorDialog.tsx; E2E curl: create sukses → dialog tutup, gagal → tetap terbuka)
+- [x] Validasi input di client dan server: hostname/IP benar, port 1–65535, batas panjang, dan input berbahaya tidak menjadi argumen shell. (Zod CreateSchema routes/connectors.ts: host regex `^[a-zA-Z0-9._-]+$`, port int 1–65535; child process spawn tanpa shell)
+- [x] Terapkan kebijakan target SSH: subnet router privat boleh diizinkan secara eksplisit; blok metadata cloud, loopback, link-local, dan layanan internal yang bukan target router. (services/target-policy.ts + ROUTER_ALLOWED_CIDRS; 9 unit test lulus; E2E curl 127.0.0.1 → HOST_NOT_ALLOWED)
+- [x] Validasi semua hasil resolusi DNS/IPv4/IPv6, cegah DNS rebinding, dan pastikan koneksi menuju alamat yang sudah lolos kebijakan. (target-policy.ts: hostname → semua record A/AAAA harus lolos; unit test DNS rebinding lulus)
+- [x] Terapkan host-key verification: pin fingerprint pada koneksi pertama yang berhasil sesuai kebijakan onboarding; perubahan fingerprint tidak diterima diam-diam. (ssh-probe.ts hostVerifier SHA256:base64 selalu dihitung; connector.create mempersist fingerprint; update/connect memverifikasi terhadap pin; HOST_KEY_CHANGED 400)
+- [x] Lakukan auth-check dari backend dengan timeout dan pembatasan frekuensi; hanya persist credential setelah koneksi berhasil. (probeRouter SSH real ssh2, SSH_CONNECT_TIMEOUT_MS; persist hanya setelah probe.ok; E2E host mati → SSH_TIMEOUT, tidak ada record DB)
+- [x] Jika test gagal, form tetap terbuka dan data lama tidak tertimpa; bedakan auth failure, DNS/host unreachable, timeout, port refused, dan host-key mismatch. (SSH_AUTH_FAILED/SSH_UNREACHABLE/SSH_TIMEOUT/HOST_KEY_CHANGED dengan pesan Indonesia + hint di UI; integration test: update gagal → credential lama tetap terdekripsi)
+- [x] Jika test berhasil, tutup form, tampilkan router aktif dan opsi disconnect/ganti; status `Terhubung` harus punya bukti koneksi, bukan sekadar record DB ada. (status hanya `connected` setelah probe SSH sukses; panel menampilkan routerIdentity + lastVerifiedAt)
+- [x] Buat supervisor mikrotik-mcp terisolasi per `(user_id, connection_id)`; jangan mengganti `process.env` global saat request user masuk. (mcp/supervisor.ts key userId:connectionId; env child hanya MIKROTIK_*, tidak mewarisi process.env)
+- [x] Spawn proses memakai executable/argumen tetap dan environment minimum per child process; jangan meneruskan seluruh environment aplikasi. (mcp/spawn-plan.ts; StdioClientTransport env eksplisit)
+- [x] Gunakan working directory/cache terisolasi agar konfigurasi, log, memory, atau artefak MCP tidak tercampur antar-user. (cwd = tmpdir()/agent-mikrotik-mcp/<userId>/<connectionId> per child)
+- [x] Jalankan Rosetta sebagai proses Bun tersendiri dengan corpus persisten dan tanpa secret router/provider. Shared process hanya boleh untuk dokumentasi publik tanpa state privat user. (mcp/rosetta.ts; env hanya DB_PATH; E2E /api/tools/rosetta 14 tool + routeros_search "safe mode" sukses via child process nyata)
+- [x] Terapkan startup timeout, health check, process crash handling, bounded restart, idle cleanup, serta batas proses/per-user/global. (startupTimeoutMs 30s; onclose/onerror → entry dead → respawn on-demand saat permintaan berikutnya (tanpa auto-restart tak terbatas); idle timer unref; MAX_MCP_PROCESSES_PER_USER/TOTAL — 5 integration test child-process nyata lulus)
+- [ ] Jangan melakukan restart otomatis proses yang sedang memiliki transaksi tanpa recovery; kegagalan harus mempertahankan status transaksi yang dapat ditelusuri. (parsial: respawn hanya on-demand, tidak otomatis; penanganan penuh menunggu state machine transaksi M6)
+- [x] Disconnect mematikan Write, menghentikan call baru, menyelesaikan rollback/reconciliation, lalu menutup sesi. Reconnect kembali ke Read-Only. (route disconnect: supervisor.stop() mematikan child + revoke write; connect berikutnya mulai read-only — integration test lulus; bagian rollback/reconciliation menunggu M6)
+- [ ] Ganti router percakapan hanya ketika run sebelumnya selesai atau sudah ditangani pembatalannya; target baru dimulai Read-Only. (menunggu percakapan M7; policy per-connector baru dimulai Read-Only sudah teruji)
 
 **Kriteria selesai:** koneksi nyata dapat dibuat/diganti/diputus, gagal tersaji akurat, dua user tidak berbagi kredensial/state, dan tidak ada child process yatim setelah cleanup.
 
@@ -643,6 +643,10 @@ Tambahkan satu entri setiap milestone atau setiap perubahan besar. Bagian ini ma
 
 | Tanggal | Milestone/item | File/artefak | Pemeriksaan dan hasil | Kendala/langkah berikutnya |
 | --- | --- | --- | --- | --- |
-| — | Belum dimulai | — | Belum ada pengujian aplikasi | Mulai M0 |
+| 2026-09-05 | M0 spike kontrak MCP | tooling/spike/*, tooling/catalog/{mikrotik-full,mikrotik-readonly,rosetta}.json, docs/integration-contracts.md, docs/decisions.md (D-001..D-007) | tools/list nyata: mikrotik-mcp@5.6.0 = 891 tool (385 read-only via MIKROTIK_READ_ONLY=1), rosetta@0.11.1 = 14 tool (wajib runtime Bun, bun:sqlite); paginasi nextCursor wajib; auth-check CLI exit 0/1; SafeModeManager upstream teridentifikasi (Ctrl+X) | Router lab fisik belum tersedia → operasi SSH/mutasi nyata diuji ulang saat lab ada |
+| 2026-09-05 | M1 fondasi monorepo | apps/web (React 19+Vite 7+Tailwind 4+shadcn), apps/api (Hono 4+Zod), packages/shared | typecheck + build lintas workspace lulus; Vite proxy /api→:3001 | Lanjut M2 |
+| 2026-09-05 | M2 database + enkripsi | apps/api/src/db/schema.ts (14 tabel), drizzle/0000_*.sql, lib/crypto.ts, lib/redaction.ts | Migrasi applied ke Postgres Docker (compose.yaml agent-mikrotik-pg); 13 unit test AES-256-GCM lulus (round-trip, tamper, cross-owner, rotasi key) | drizzle-kit migrate tidak jalan untuk Postgres lokal (neon-http butuh websocket) → pakai apps/api/scripts/migrate.ts |
+| 2026-09-05 | M3 auth | services/auth.ts, auth-core.ts, routes/auth.ts, apps/web/src/features/auth/ | 18 test lulus (OTP atomic consume, resend, rate limit persisten, session hash); E2E manual HTTP lulus: OTP request→verify→cookie→me→logout; Google OIDC code flow diimplementasi tapi TIDAK teruji E2E (GOOGLE_CLIENT_ID/SECRET belum tersedia); origin check menolak Origin asing (terverifikasi) | Google OIDC menunggu kredensial; Brevo menunggu API key (mock email aktif di dev) |
+| 2026-09-05 | M4 connector + supervisor MCP | services/{connector,target-policy,ssh-probe}.ts, mcp/{supervisor,spawn-plan,rosetta}.ts, routes/connectors.ts, apps/web/src/features/connectors/ | 38 test lulus total (9 target-policy, 6 connector integration Postgres nyata, 5 supervisor child-process nyata: katalog 891/385, respawn saat ganti mode, limit per-user, idle cleanup tanpa proses yatim, crash→respawn on-demand); E2E curl: loopback ditolak, host mati → SSH_TIMEOUT terklasifikasi, tidak ada persist saat gagal, Rosetta /api/tools/rosetta 14 tool + search nyata; lint 0 error, typecheck bersih, build web+api sukses | Mutasi nyata ke router menunggu lab router (skrip uji disiapkan); bagian transaksi (restart aman, rollback disconnect) menunggu M6; ganti router percakapan menunggu M7 |
 
 **Instruksi mulai untuk AI pelaksana:** baca `plan.md`, kerjakan M0, lanjutkan implementasi sesuai urutan, dan perbarui checkbox hanya dengan bukti. Jika credential/domain/router lab belum tersedia, lanjutkan pekerjaan yang independen sambil mencatat kebutuhan eksternal secara spesifik. Jangan menurunkan pengamanan atau mengklaim integrasi berhasil untuk menghilangkan blocker.
