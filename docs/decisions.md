@@ -59,3 +59,17 @@ Monorepo Bun workspaces sesuai plan.md §5: `apps/web`, `apps/api`, `packages/sh
 **Alasan:** Nama tool serupa tidak membuktikan operasi tercakup (plan.md §4.1); pengukuran per operasi memberi denominator jujur. Menu tanpa tool upstream ditandai gap-open sampai tool custom menutupnya; menu yang memang tidak ada di router target diklasifikasi `unsupported-on-target` saat runtime via capability check (`TOOL_UNSUPPORTED`), bukan dihapus dari denominator.
 
 **Dampak:** Snapshot M4B: 489 operasi, 482 covered-existing, 7 covered-custom, 0 gap-open. Mutasi nyata ke router tetap `gap-open` secara bukti-lab sampai router fisik tersedia (kejujuran pengujian, bukan keberadaan tool).
+
+## D-010 — Kredensial layanan nyata terpasang di `.env`; hasil verifikasi dicatat per layanan
+
+**Tanggal:** 5 Sep 2026 (M6). User memberikan kredensial Neon, Backblaze B2, dan Brevo; semua dipasang di `.env` (ter-gitignore) dan diverifikasi dengan probe nyata sebelum dicatat.
+
+**Hasil verifikasi:**
+
+- **Neon** (pooler `ep-square-violet-az3qiw3f-pooler.c-3.ap-southeast-1`): driver `pg` Pool ter-reset (ECONNRESET) dari host Windows ini, tetapi driver `@neondatabase/serverless` neon-http bekerja. Migrasi dijalankan nyata via `apps/api/scripts/migrate-neon.ts` → 14 tabel + journal `__drizzle_migrations` terbentuk di `neondb`. Skrip migrasi Neon memakai neon-http; Postgres lokal Docker tetap default dev/test harian.
+- **Backblaze B2**: Master Application Key (`b7b05c52b0a4`) valid — `b2_authorize_account` OK (`apiUrl https://api004.backblazeb2.com`, S3 `s3.us-west-004.backblazeb2.com`). Bucket `mikrotik-agent` terverifikasi ada via `b2_list_buckets` (tipe `allPrivate`, id `bb37ebf0b56c7502ab000a14`). Kedua key non-master `mikrotik-key` (keyID `004b7b05c52b0a40000000005`) GAGAL 401 — application key non-master hanya tampil sekali saat pembuatan; nilai yang user salin kelihatannya adalah application key Master. Dipakai: Master key + bucket `mikrotik-agent`, endpoint S3 `https://s3.us-west-004.backblazeb2.com`.
+- **Brevo**: REST API key ditolak — "unrecognised IP address 159.26.119.220 … add the new IP address in this link: https://app.brevo.com/security/authorised_ips" (blokir IP eksternal; perlu user menambahkan IP ke authorised IPs di dashboard Brevo). **SMTP key VALID dan diverifikasi end-to-end**: percakapan SMTP nyata ke `smtp-relay.brevo.com:587` (STARTTLS, TLS 1.3) → AUTH LOGIN sukses (235), lalu `sendMail` nyata via nodemailer diterima (250 queued). OTP email produksi memakai jalur SMTP (adapter `BrevoSmtpSender`); BREVO_SENDER_EMAIL belum diisi user (sender terverifikasi Brevo belum tersedia) sehingga mode dev masih memakai mock OTP ke log.
+
+**Keputusan:** Jalur yang terbukti bekerja (neon-http untuk Neon, SMTP untuk Brevo, Master key S3-compatible untuk B2) menjadi jalur production; yang terblokir (Brevo REST API) didokumentasikan sebagai blocker eksternal, tidak di-klaim aktif. `.env` tidak pernah di-commit (gitignore); template `.env.example` tetap placeholder.
+
+**Dampak:** Checkbox integrasi nyata di plan.md untuk Neon/B2/Brevo-SMTP dicentang dengan bukti di atas; Brevo REST API tetap blocker eksternal sampai user men-whitelist IP 159.26.119.220.

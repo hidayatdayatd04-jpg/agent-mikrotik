@@ -7,6 +7,7 @@ import type { Env as HonoEnv } from "./types";
 import { createDb } from "./db";
 import { checkDatabase } from "./db/health";
 import { createAuthService, MockEmailSender, type EmailSender } from "./services/auth";
+import { BrevoSmtpSender } from "./services/brevo-smtp";
 import { createAuthRoutes } from "./routes/auth";
 import { createConnectorService } from "./services/connector";
 import { createConnectorRoutes } from "./routes/connectors";
@@ -121,7 +122,17 @@ const dispatcher = new PolicyDispatcher({
 
 const email: EmailSender = config.useMockEmail
   ? new MockEmailSender((m, d) => logger.warn(m, d))
-  : new MockEmailSender((m) => logger.warn(m)); // Brevo adapter added in M3 wiring when API key present
+  : new BrevoSmtpSender(
+      {
+        host: config.BREVO_SMTP_HOST,
+        port: config.BREVO_SMTP_PORT,
+        login: config.BREVO_SMTP_LOGIN!,
+        smtpKey: config.BREVO_SMTP_KEY!,
+        senderName: config.BREVO_SENDER_NAME,
+        senderEmail: config.BREVO_SENDER_EMAIL!,
+      },
+      logger,
+    );
 
 const auth = createAuthService(db, config, email);
 const authRoutes = createAuthRoutes({ auth, email, logger, otpSecret: config.OTP_HMAC_SECRET ?? "dev-otp", db, config });

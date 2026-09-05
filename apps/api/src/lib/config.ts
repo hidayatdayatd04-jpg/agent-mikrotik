@@ -30,9 +30,13 @@ export const EnvSchema = z.object({
     .url()
     .default("http://localhost:3000/api/auth/callback/google"),
 
-  BREVO_API_KEY: z.string().optional(),
+  BREVO_API_KEY: z.preprocess((v) => (v === "" ? undefined : v), z.string().optional()),
   BREVO_SENDER_NAME: z.string().default("MikroTik AI Agent"),
-  BREVO_SENDER_EMAIL: z.string().email().optional(),
+  BREVO_SENDER_EMAIL: z.preprocess((v) => (v === "" ? undefined : v), z.string().email().optional()),
+  BREVO_SMTP_KEY: z.preprocess((v) => (v === "" ? undefined : v), z.string().optional()),
+  BREVO_SMTP_HOST: z.string().default("smtp-relay.brevo.com"),
+  BREVO_SMTP_PORT: int(587, 1, 65535),
+  BREVO_SMTP_LOGIN: z.preprocess((v) => (v === "" ? undefined : v), z.string().optional()),
 
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_MODEL: z.string().optional(),
@@ -98,7 +102,7 @@ export function loadConfig(from: Record<string, string | undefined> = process.en
   return {
     ...env,
     isProduction,
-    useMockEmail: !env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL,
+    useMockEmail: (!env.BREVO_SMTP_KEY || !env.BREVO_SMTP_LOGIN || !env.BREVO_SENDER_EMAIL) && !env.BREVO_API_KEY,
     useMockAnthropic: !env.ANTHROPIC_API_KEY,
     useMockOAuth: !env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET,
     trustedOrigins: env.TRUSTED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean),
