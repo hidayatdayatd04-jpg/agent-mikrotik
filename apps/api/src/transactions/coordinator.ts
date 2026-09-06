@@ -219,6 +219,10 @@ export class TransactionCoordinator {
     this.actionCount.set(txId, n);
   }
 
+  getActionCount(txId: string): number {
+    return this.actionCount.get(txId) ?? 0;
+  }
+
   /** Before every mutation batch: is the session still alive + safe mode open? */
   async assertActive(txId: string): Promise<void> {
     const row = await this.require(txId);

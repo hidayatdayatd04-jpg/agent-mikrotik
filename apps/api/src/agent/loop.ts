@@ -335,6 +335,14 @@ export function createAgentLoop(deps: AgentRunDeps) {
             if (tx) {
               try {
                 deps.txCoordinator.recordAction(tx.id);
+                await emitSeq({
+                  type: "transaction.updated",
+                  payload: {
+                    transactionId: tx.id,
+                    state: tx.state,
+                    actions: deps.txCoordinator.getActionCount(tx.id),
+                  },
+                });
               } catch (err) {
                 if (err instanceof AppError) {
                   chatHistory.push({

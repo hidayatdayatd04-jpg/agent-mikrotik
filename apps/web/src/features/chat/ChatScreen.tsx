@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { Plug } from "lucide-react";
 import { ChatPanel } from "./ChatPanel";
 import { ChatComposer } from "./ChatComposer";
 import {
@@ -9,20 +10,34 @@ import {
   useCancelRun,
   useUploadAttachment,
   useDeleteAttachment,
+  useUpdateConversation,
   type AttachmentDTO,
 } from "./chat-hooks";
+import { useConnectors, useSetConnectorMode } from "@/features/connectors/connector-hooks";
 import { useRunEvents } from "./use-run-events";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { ConnectorDTO } from "@shared/index";
 
 /**
- * Chat screen (M9): full conversation flow — history, streaming run, tool
- * activity, cancel, attachments. `activeConversationId` is controlled by the
+ * Chat screen: full conversation flow — history, streaming run, tool
+ * activity, cancel, attachments, real router/mode header with Write
+ * toggle (M10 wiring). `activeConversationId` is controlled by the
  * parent shell.
  */
 export function ChatScreen(props: {
   conversationId: string;
   activeRouterLabel: string | null;
   writeMode: boolean;
+  activeConnector: ConnectorDTO | null;
 }) {
   const qc = useQueryClient();
   const messages = useMessages(props.conversationId);
@@ -30,6 +45,9 @@ export function ChatScreen(props: {
   const cancelRun = useCancelRun();
   const upload = useUploadAttachment(props.conversationId);
   const removeAttachment = useDeleteAttachment(props.conversationId);
+  const updateConversation = useUpdateConversation(props.conversationId);
+  const connectors = useConnectors();
+  const setMode = useSetConnectorMode(props.activeConnector?.id ?? "");
   const [attachments, setAttachments] = useState<AttachmentDTO[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const runEvents = useRunEvents(activeRunId, useCallback(() => {
@@ -76,6 +94,35 @@ export function ChatScreen(props: {
     }
   }
 
+  async function handleToggleWrite(next: boolean) {
+    if (!props.activeConnector) return;
+    try {
+      await setMode.mutateAsync({
+        mode: next ? "write" : "read-only",
+        expectedVersion: props.activeConnector.modeVersion,
+      });
+      toast.success(next ? "Mode Write aktif — mutasi akan berjalan dalam transaksi Safe Mode." : "Mode kembali Read-Only.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Gagal mengubah mode.");
+      // authoritative state is the connector list — refetch
+      qc.invalidateQueries({ queryKey: ["connectors"] });
+    }
+  }
+
+  function handlePickConnection(connectorId: string | null) {
+    updateConversation.mutate(
+      { connectionId: connectorId },
+      {
+        onSuccess: () => {
+          qc.invalidateQueries({ queryKey: ["conversation", props.conversationId] });
+          qc.invalidateQueries({ queryKey: ["conversations"] });
+          toast.success(connectorId ? "Router percakapan diperbarui." : "Router dilepas dari percakapan.");
+        },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
   function handlePickFile(file: File) {
     if (file.size > 10 * 1024 * 1024) {
       toast.error("File melebihi 10 MiB.");
@@ -96,25 +143,62 @@ export function ChatScreen(props: {
     });
   }
 
+  const connected = props.activeConnector?.status === "connected";
   const modeBadge = props.writeMode ? "Write" : "Read-Only";
 
   return (
     <div className="flex h-full flex-col">
-      {props.activeRouterLabel && (
-        <div className="flex items-center gap-2 border-b px-4 py-2 text-sm">
-          <span className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium">
-            <span className="size-1.5 rounded-full bg-emerald-500" aria-hidden />
-            {props.activeRouterLabel}
-          </span>
-          <span
-            className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${
-              props.writeMode ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400" : ""
-            }`}
+      <div className="flex items-center gap-2 border-b px-4 py-2 text-sm">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className="gap-2" aria-label="Pilih router percakapan">
+              <Plug className="size-4" aria-hidden />
+              {props.activeRouterLabel ?? "Tanpa router"}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuLabel>Router percakapan</DropdownMenuLabel>
+            <DropdownMenuItem onClick={() => handlePickConnection(null)}>
+              Tanpa router (dokumentasi saja)
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            {(connectors.data ?? []).map((c) => (
+              <DropdownMenuItem
+                key={c.id}
+                onClick={() => handlePickConnection(c.id)}
+              >
+                {c.label} ({c.host}) — {c.status === "connected" ? "terhubung" : c.status}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <span
+          className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${
+            props.writeMode ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400" : ""
+          }`}
+        >
+          Mode: {modeBadge}
+        </span>
+        {props.activeConnector && (
+          <label
+            className="flex items-center gap-2 text-xs"
+            title={connected ? "Mode Write" : "Hubungkan router dulu untuk mengubah mode"}
           >
-            Mode: {modeBadge}
+            <span className={props.writeMode ? "font-medium" : "text-muted-foreground"}>Write</span>
+            <Switch
+              checked={props.writeMode}
+              disabled={!connected || setMode.isPending || runEvents.live}
+              onCheckedChange={handleToggleWrite}
+              aria-label="Mode write"
+            />
+          </label>
+        )}
+        {runEvents.txStatus && (
+          <span className="ml-auto inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium">
+            {runEvents.txStatus}
           </span>
-        </div>
-      )}
+        )}
+      </div>
       <ChatPanel
         messages={messages.data ?? []}
         streamText={runEvents.streamText}

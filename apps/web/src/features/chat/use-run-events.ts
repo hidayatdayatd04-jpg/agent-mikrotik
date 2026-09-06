@@ -11,6 +11,7 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
   const [live, setLive] = useState(false);
   const [streamText, setStreamText] = useState("");
   const [toolActivity, setToolActivity] = useState<{ name: string; status: "running" | "done" | "failed" }[]>([]);
+  const [txStatus, setTxStatus] = useState<string | null>(null);
   const doneRef = useRef(onDone);
   doneRef.current = onDone;
 
@@ -19,12 +20,14 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
       setEvents([]);
       setStreamText("");
       setToolActivity([]);
+      setTxStatus(null);
       setLive(false);
       return;
     }
     setEvents([]);
     setStreamText("");
     setToolActivity([]);
+    setTxStatus(null);
     setLive(true);
 
     const es = new EventSource(`/api/runs/${runId}/events`);
@@ -41,7 +44,7 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
         /* ignore non-JSON keepalives */
       }
     };
-    for (const type of ["run.started", "message.delta", "tool.started", "tool.completed", "tool.failed", "run.completed", "run.failed", "run.cancelled"] as const) {
+    for (const type of ["run.started", "message.delta", "tool.started", "tool.completed", "tool.failed", "transaction.updated", "run.completed", "run.failed", "run.cancelled"] as const) {
       es.addEventListener(type, (e: MessageEvent) => {
         try {
           const ev = JSON.parse(e.data) as RunEventDTO;
@@ -51,6 +54,9 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
           } else if (ev.type === "tool.started") {
             const name = String((ev.payload as { name?: string }).name ?? "tool");
             setToolActivity((prev) => [...prev, { name, status: "running" }]);
+          } else if (ev.type === "transaction.updated") {
+            const p = ev.payload as { state?: string; actions?: number };
+            setTxStatus(`Safe Mode ${p.state ?? "?"} · aksi ${p.actions ?? 0}`);
           } else if (ev.type === "tool.completed") {
             setToolActivity((prev) => {
               const next = [...prev];
@@ -93,5 +99,5 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
     };
   }, [runId]);
 
-  return { events, streamText, toolActivity, live };
+  return { events, streamText, toolActivity, txStatus, live };
 }

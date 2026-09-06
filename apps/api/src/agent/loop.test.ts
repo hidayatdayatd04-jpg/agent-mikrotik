@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import { createAgentLoop, type RunEvent } from "./loop";
 import type { ChatClient, StreamEvent, ChatToolCall } from "./chat-client";
-import { agentRuns, conversations, messages, toolExecutions, users } from "../db/schema";
+import { agentRuns, conversations, messages, toolExecutions, users, changeTransactions, routerConnections } from "../db/schema";
 import { createDb, type Database } from "../db";
 import { eq } from "drizzle-orm";
 import type { NormalizedTool } from "../policies/normalize";
@@ -65,7 +65,7 @@ const stubDispatcher = {
       : { allowed: false as const, code: "TOOL_NOT_FOUND", message: "tidak ada" },
 };
 
-const stubCoordinator = { recordAction: () => {} };
+const stubCoordinator = { recordAction: () => {}, getActionCount: () => 0 };
 
 async function setup() {
   const [u] = await db.insert(users).values({ email: `loop-test-${Date.now()}@example.com`, name: "loop-test" }).returning();
@@ -229,6 +229,69 @@ describe("agent loop (unit, local postgres)", () => {
     const [te] = await db.select().from(toolExecutions).where(eq(toolExecutions.runId, ctx.runId));
     expect(te?.status).toBe("denied");
     expect(typesEnd(events)).toBe("run.completed");
+  });
+
+  test("write-mode tool call emits transaction.updated with action count", async () => {
+    if (!connected) return;
+    const ctx = await setup();
+    // a fake connection + active safe-mode tx for the write run
+    const connId = crypto.randomUUID();
+    await db.insert(routerConnections).values({
+      id: connId,
+      userId: ctx.userId,
+      label: "loop-test-router",
+      host: "192.0.2.99",
+      port: 22,
+      username: "admin",
+      status: "connected",
+    });
+    const [tx] = await db
+      .insert(changeTransactions)
+      .values({
+        connectionId: connId,
+        routerIdentity: "test-router",
+        state: "active",
+      })
+      .returning();
+    let actions = 0;
+    const countingCoordinator = {
+      recordAction: (txId: string) => {
+        if (txId === tx!.id) actions += 1;
+      },
+      getActionCount: (txId: string) => (txId === tx!.id ? actions : 0),
+    };
+    const loop = createAgentLoop({
+      db,
+      logger: silentLogger,
+      dispatcher: stubDispatcher as never,
+      txCoordinator: countingCoordinator as never,
+      catalog: { getCatalog: async () => makeCatalog() },
+      limits: { maxSteps: 5, maxToolCalls: 5, runTimeoutMs: 10_000, maxTokens: 1000 },
+    });
+    const events: RunEvent[] = [];
+    const client = makeScriptedClient([
+      { toolCalls: [{ id: "call-1", name: "docs_routeros_search", argumentsJson: '{"query":"x"}' }], text: "" },
+      { text: "Mutasi tercatat dalam transaksi." },
+    ]);
+    await loop.run(
+      {
+        ...ctx,
+        connectionId: connId,
+        userText: "cari",
+        policy: { userId: ctx.userId, connectionId: connId, mode: "write", modeVersion: 1, transactionState: "active" },
+        client,
+        executeTool: async () => ({ ok: true, output: "ok" }),
+        systemInstruction: "s",
+      },
+      async (e) => {
+        events.push(e);
+      },
+    );
+    const txEvents = events.filter((e) => e.type === "transaction.updated");
+    expect(txEvents.length).toBe(1);
+    expect(txEvents[0]?.payload.transactionId).toBe(tx!.id);
+    expect(txEvents[0]?.payload.state).toBe("active");
+    expect(txEvents[0]?.payload.actions).toBe(1);
   });
 
   test("tool budget exceeded fails the run with TOOL_CALL_BUDGET", async () => {
