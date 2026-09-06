@@ -5,6 +5,7 @@ import {
   envKeyRing,
   hmacDigest,
   constantTimeEquals,
+  makeKeyRing,
   type SealedSecret,
 } from "./crypto";
 
@@ -52,6 +53,20 @@ describe("sealSecret/openSecret round-trip", () => {
     expect(openSecret(ring2, sealedV1, "user-1", "conn-1")).toBe("old-secret");
     const sealedV2 = sealSecret(ring2, "new-secret", "user-1", "conn-1");
     expect(sealedV2.keyVersion).toBe(2);
+  });
+
+  test("makeKeyRing wires PREVIOUS key into multi-version ring (rotasi env)", () => {
+    const silent = { warn: () => {} };
+    const ring = makeKeyRing(KEY, 2, OTHER_KEY, 1, false, silent);
+    // seal with old ring (v1) then open with rotated ring (v1+v2)
+    const oldRing = envKeyRing({ 1: OTHER_KEY }, 1);
+    const sealedV1 = sealSecret(oldRing, "rotasi", "u", "c");
+    expect(openSecret(ring, sealedV1, "u", "c")).toBe("rotasi");
+    // new seals use v2
+    const sealedV2 = sealSecret(ring, "baru", "u", "c");
+    expect(sealedV2.keyVersion).toBe(2);
+    // production without key throws
+    expect(() => makeKeyRing(undefined, 1, undefined, undefined, true, silent)).toThrow();
   });
 
   test("missing key version returns null, not throw", () => {

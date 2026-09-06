@@ -53,6 +53,15 @@ export const EnvSchema = z.object({
       { message: "ROUTER_CREDENTIAL_KEY must be a base64 32-byte key" },
     ),
   ROUTER_CREDENTIAL_KEY_VERSION: int(1, 1, 255),
+  /** Key lama (base64 32-byte) untuk decrypt record versi sebelumnya saat rotasi. */
+  ROUTER_CREDENTIAL_KEY_PREVIOUS: z
+    .string()
+    .optional()
+    .refine(
+      (v) => v === undefined || /^[A-Za-z0-9+/]{43}={0,2}$/.test(v) || v.length >= 32,
+      { message: "ROUTER_CREDENTIAL_KEY_PREVIOUS must be a base64 32-byte key" },
+    ),
+  ROUTER_CREDENTIAL_KEY_PREVIOUS_VERSION: int(2, 2, 255).optional(),
   OTP_HMAC_SECRET: z.string().optional(),
   OTP_TTL_SECONDS: int(300, 30, 3600),
   OTP_MAX_ATTEMPTS: int(5, 1, 20),

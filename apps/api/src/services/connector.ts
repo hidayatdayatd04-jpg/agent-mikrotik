@@ -259,6 +259,20 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
       .set({ status: "connected", lastVerifiedAt: new Date(), updatedAt: new Date() })
       .where(eq(routerConnections.id, connectionId))
       .returning();
+    // key rotation: re-seal under the current key version when the stored
+    // record still uses an older one (password is already open here)
+    if (row.keyVersion < deps.keyRing.currentVersion) {
+      const sealed = sealSecret(deps.keyRing, password, userId, connectionId);
+      await db
+        .update(routerConnections)
+        .set({
+          passwordCiphertext: sealed.ciphertext,
+          passwordNonce: sealed.nonce,
+          passwordAuthTag: sealed.authTag,
+          keyVersion: sealed.keyVersion,
+        })
+        .where(eq(routerConnections.id, connectionId));
+    }
     const perm = await ensurePermission(userId, connectionId);
     return toDTO(updated ?? row, perm.writeEnabled ? "write" : "read-only", perm.version);
   }

@@ -115,3 +115,31 @@ export function envKeyRing(
     },
   };
 }
+
+/**
+ * Build a KeyRing from env config. Supports key rotation: the current
+ * key seals new secrets at `version`; `previousKey` (older version) stays
+ * resolvable so existing records decrypt until re-sealed.
+ */
+export function makeKeyRing(
+  key: string | undefined,
+  version: number,
+  previousKey: string | undefined,
+  previousVersion: number | undefined,
+  isProduction: boolean,
+  log: { warn: (msg: string, data?: unknown) => void },
+): KeyRing {
+  if (key) {
+    const keysByVersion: Record<number, string> = { [version]: key };
+    if (previousKey && previousVersion && previousVersion < version) {
+      keysByVersion[previousVersion] = previousKey;
+    }
+    return envKeyRing(keysByVersion, version);
+  }
+  if (isProduction) {
+    throw new Error("ROUTER_CREDENTIAL_KEY wajib di isi di production (base64 32 byte).");
+  }
+  log.warn("ROUTER_CREDENTIAL_KEY tidak diisi — memakai dev-key. Jangan pakai di production.");
+  const devKey = Buffer.from("dev-only-credential-key-32bytes-padx", "utf8").subarray(0, 32).toString("base64");
+  return envKeyRing({ [version]: devKey }, version);
+}

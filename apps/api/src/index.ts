@@ -12,7 +12,7 @@ import { createAuthRoutes } from "./routes/auth";
 import { createConnectorService } from "./services/connector";
 import { createConnectorRoutes } from "./routes/connectors";
 import { createTargetPolicy } from "./services/target-policy";
-import { envKeyRing } from "./lib/crypto";
+import { makeKeyRing } from "./lib/crypto";
 import { McpSupervisor } from "./mcp/supervisor";
 import { makeSpawnPlan } from "./mcp/spawn-plan";
 import { RosettaProcess } from "./mcp/rosetta";
@@ -31,24 +31,7 @@ function resolveRosettaCli(): string {
   return nodeRequire.resolve("@tikoci/rosetta/bin/rosetta.js");
 }
 
-function makeKeyRing(
-  key: string | undefined,
-  version: number,
-  isProduction: boolean,
-  log: { warn: (msg: string, data?: unknown) => void },
-) {
-  if (key) {
-    return envKeyRing({ [version]: key }, version);
-  }
-  if (isProduction) {
-    throw new Error("ROUTER_CREDENTIAL_KEY wajib diisi di production (base64 32 byte).");
-  }
-  log.warn("ROUTER_CREDENTIAL_KEY tidak diisi — memakai dev-key. Jangan pakai di production.");
-  const devKey = Buffer.from("dev-only-credential-key-32bytes-padx", "utf8").subarray(0, 32).toString("base64");
-  return envKeyRing({ [version]: devKey }, version);
-}
-
-const keyRing = makeKeyRing(config.ROUTER_CREDENTIAL_KEY, config.ROUTER_CREDENTIAL_KEY_VERSION, config.isProduction, logger);
+const keyRing = makeKeyRing(config.ROUTER_CREDENTIAL_KEY, config.ROUTER_CREDENTIAL_KEY_VERSION, config.ROUTER_CREDENTIAL_KEY_PREVIOUS, config.ROUTER_CREDENTIAL_KEY_PREVIOUS_VERSION, config.isProduction, logger);
 
 const supervisor = new McpSupervisor(
   makeSpawnPlan(config.MCP_BUN_EXECUTABLE),

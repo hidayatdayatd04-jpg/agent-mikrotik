@@ -97,3 +97,19 @@ Monorepo Bun workspaces sesuai plan.md §5: `apps/web`, `apps/api`, `packages/sh
 **Keputusan:** Native B2 API menjadi jalur storage (satu-satunya yang terbukti bekerja dengan kredensial yang user miliki). Tidak ada presigned URL ke browser — upload/download semua di-proxy backend sehingga ownership check per-request tetap berlaku.
 
 **Dampak:** M8 upload/download/delete E2E nyata ke bucket produksi terbukti; catatan di plan.md M8 diperbarui. Jika kelak user membuat application key S3 yang valid, migrasi ke S3-compatible bisa jadi optimasi (streaming multipart) tanpa mengubah kontrak route.
+
+## D-013 — Lab SSH container untuk E2E tanpa router fisik
+
+**Tanggal:** 6 Sep 2026 (M10). Router lab fisik tidak tersedia; untuk membuktikan alur connector nyata (probe SSH, persist, connect, mode), dipakai container `atmoz/sftp:alpine` di `192.168.56.1:2222` (host-only adapter VirtualBox — bukan loopback, lolos target-policy; loopback sendiri terbukgi ditolak `HOST_NOT_ALLOWED`). Probe SSH nyata (child process MCP auth-check) berhasil; connector status `connected`; run dengan router terikat mengirim katalog penuh dan memanggil tool nyata.
+
+**Batas jujur:** Container ini adalah server SSH generik, BUKAN RouterOS — command RouterOS tidak dieksekusi di dalamnya; mutasi Safe Mode nyata tetap menunggu router lab fisik (gap-open). E2E ini membuktikan jalur transport/autentikasi/state, bukan efek konfigurasi router.
+
+## D-014 — Rate limit run in-process sliding window
+
+**Tanggal:** 6 Sep 2026 (M10). Rate limit run per user (20 run/60 detik) diimplementasikan in-process sliding window di `routes/chat.ts` — tanpa Redis/store eksternal agar dev tetap zero-dependency.
+
+**Dampak & batas:** Cukup untuk deployment single-node; untuk multi-node/HPA, store terpusat (Redis) adalah TODO production yang tercatat — jangan dianggap sudah menangani skala horizontal.
+
+## D-015 — Retensi objek B2: hapus saat conversation dihapus; sweep berjadwal ditunda
+
+**Tanggal:** 6 Sep 2026 (M10). DELETE `/api/conversations/:id` menghapus SEMUA objek B2 milik percakapan (loop per objectKey dengan validasi prefix `attachments/${userId}/`) sebelum cascade DB — terbukti E2E (objectsRemoved + listing B2 bersih). Sweep orphan berkala (objek tanpa record DB, misal upload yang gagal setelah B2 sukses) belum diimplementasikan — dicatat sebagai TODO production, bukan klaim selesai.

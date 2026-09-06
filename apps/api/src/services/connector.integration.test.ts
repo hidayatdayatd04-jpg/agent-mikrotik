@@ -143,4 +143,42 @@ describe("connector service (integration, local postgres, stubbed probe)", () =>
     const [row] = await db.select().from(routerConnections).where(eq(routerConnections.id, connector.id));
     expect(row!.host).toBe("192.168.88.23");
   }, 20_000);
+
+  test("connect re-seals credential under rotated key version", async () => {
+    if (!userId) return;
+    // create under the v1-only ring
+    const svcV1 = createConnectorService({
+      db,
+      keyRing,
+      targetPolicy: createTargetPolicy([], staticDns({})),
+      sshTimeoutMs: 1000,
+      log: () => {},
+      probe: probe.fn,
+    });
+    const { connector } = await svcV1.create(userId, { label: "rt5", host: "192.168.88.24", port: 22, username: "admin", password: "secret5" });
+    let [row] = await db.select().from(routerConnections).where(eq(routerConnections.id, connector.id));
+    expect(row!.keyVersion).toBe(1);
+
+    // rotate the ring: v2 current, v1 still resolvable
+    const rotatedRing = envKeyRing(
+      { 1: Buffer.alloc(32, 7).toString("base64"), 2: Buffer.alloc(32, 9).toString("base64") },
+      2,
+    );
+    const svcV2 = createConnectorService({
+      db,
+      keyRing: rotatedRing,
+      targetPolicy: createTargetPolicy([], staticDns({})),
+      sshTimeoutMs: 1000,
+      log: () => {},
+      probe: probe.fn,
+    });
+    const out = await svcV2.connect(userId, connector.id);
+    expect(out.status).toBe("connected");
+    // row re-sealed at v2 and still decryptable with the rotated ring
+    [row] = await db.select().from(routerConnections).where(eq(routerConnections.id, connector.id));
+    expect(row!.keyVersion).toBe(2);
+    expect(await svcV2.decryptCredential(userId, connector.id)).toBe("secret5");
+    // v1-only ring can no longer open the re-sealed record
+    await expect(svcV1.decryptCredential(userId, connector.id)).rejects.toThrow();
+  }, 20_000);
 });
