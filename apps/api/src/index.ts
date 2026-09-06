@@ -349,4 +349,20 @@ export default {
   port,
   fetch: app.fetch,
   app,
+  // graceful shutdown (Docker SIGTERM): stop supervised MCP children so no
+  // orphan ssh processes survive the container; in-flight SSE writes drain.
 };
+
+// Bun serves `export default`; signal handlers run alongside.
+const shutdown = async (signal: string) => {
+  logger.info("graceful shutdown started", { signal });
+  try {
+    await supervisor.shutdownAll();
+  } catch (err) {
+    logger.error("supervisor shutdown error", { message: err instanceof Error ? err.message : String(err) });
+  }
+  logger.info("graceful shutdown complete", { signal });
+  process.exit(0);
+};
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));

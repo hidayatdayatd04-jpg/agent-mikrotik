@@ -72,6 +72,9 @@
     },
     "packages/mikrotik-tools": {
       "name": "@agent-mikrotik/mikrotik-tools",
+      "dependencies": {
+        "zod": "3.25.76",
+      },
     },
     "packages/shared": {
       "name": "@agent-mikrotik/shared",

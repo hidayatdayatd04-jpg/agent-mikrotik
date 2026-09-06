@@ -6,11 +6,10 @@ import * as schema from "./schema";
 
 export type Database = NodePgDatabase<typeof schema> | ReturnType<typeof createNeonDb>;
 
-const isLocalPostgres = (url: string): boolean => {
+const isNeonUrl = (url: string): boolean => {
   try {
-    const u = new URL(url);
-    const host = u.hostname;
-    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "host.docker.internal";
+    const host = new URL(url).hostname.toLowerCase();
+    return host.endsWith(".neon.tech") || host.endsWith(".neon.build");
   } catch {
     return false;
   }
@@ -22,13 +21,15 @@ function createNeonDb(connectionString: string) {
 }
 
 /**
- * Neon (production) uses the serverless HTTP driver against DATABASE_URL (pooled).
- * Local dev Postgres uses node-postgres because neon-http requires Neon's WebSocket proxy.
+ * Driver selection by URL shape:
+ *  - *.neon.tech / *.neon.build → neon-http (serverless HTTP driver, works with
+ *    Neon's proxy where node-postgres Pool from some networks gets ECONNRESET);
+ *  - anything else (localhost, docker hostname, RDS/other Postgres) → node-postgres Pool.
  */
 export function createDb(connectionString: string): Database {
-  if (isLocalPostgres(connectionString)) {
-    const pool = new Pool({ connectionString });
-    return drizzlePg(pool, { schema });
+  if (isNeonUrl(connectionString)) {
+    return createNeonDb(connectionString);
   }
-  return createNeonDb(connectionString);
+  const pool = new Pool({ connectionString });
+  return drizzlePg(pool, { schema });
 }
