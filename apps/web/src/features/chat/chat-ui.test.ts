@@ -1,4 +1,15 @@
 import { describe, expect, test } from "vitest";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+/** Same link filter as ChatPanel: only http(s) survives, others render as text. */
+function SafeLink({ href, children }: { href?: string; children?: React.ReactNode }) {
+  const safe = href && /^https?:\/\//i.test(href) ? href : undefined;
+  if (!safe) return React.createElement(React.Fragment, null, children);
+  return React.createElement("a", { href: safe, rel: "noopener noreferrer", target: "_blank" }, children);
+}
 
 /**
  * Pure-logic tests for the chat UI (M9): SSE event stream → view state
@@ -83,5 +94,52 @@ describe("chat UI stream logic", () => {
       seen.add(key);
     }
     expect(seen.size).toBe(100);
+  });
+
+  test("markdown: raw HTML is NOT rendered (no rehype-raw) — script/img tags neutralized", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(
+        ReactMarkdown,
+        { remarkPlugins: [remarkGfm] },
+        '<img src=x onerror="alert(1)"><script>alert(2)</script><b onclick="alert(3)">bold</b>',
+      ),
+    );
+    // no live tags: everything is escaped into text content
+    expect(html).not.toContain("<script");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<b ");
+    expect(html).toContain("&lt;img");
+    expect(html).toContain("&lt;script");
+    // event handler text is escaped too, never an executable attribute
+    expect(html).toContain("onerror=&quot;");
+  });
+
+  test("markdown: javascript: links dropped, http(s) links kept with hardening attrs", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(
+        ReactMarkdown,
+        {
+          remarkPlugins: [remarkGfm],
+          components: { a: SafeLink },
+        },
+        "[klik](javascript:alert(1)) dan [aman](https://mikrotik.com)",
+      ),
+    );
+    expect(html).not.toContain("javascript:");
+    expect(html).toContain('href="https://mikrotik.com"');
+    expect(html).toContain('rel="noopener noreferrer"');
+  });
+
+  test("markdown: GFM tables render, raw html inside table cells still escaped", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(
+        ReactMarkdown,
+        { remarkPlugins: [remarkGfm] },
+        "| a | b |\n| --- | --- |\n| <iframe src=evil> | data |",
+      ),
+    );
+    expect(html).toContain("<table>");
+    expect(html).not.toContain("<iframe");
+    expect(html).toContain("&lt;iframe");
   });
 });

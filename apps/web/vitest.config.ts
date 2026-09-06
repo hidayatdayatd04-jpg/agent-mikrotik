@@ -11,6 +11,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    root: path.resolve(__dirname),
     include: ["src/**/*.test.{ts,tsx}"],
   },
 });
