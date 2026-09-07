@@ -18,7 +18,7 @@ export interface ConversationDTO {
 export interface MessageDTO {
   id: string;
   role: "user" | "assistant";
-  content: { text?: string; runId?: string; timeline?: RunEventDTO[]; attachments?: { id: string; name: string; kind: string }[] };
+  content: { text?: string; runId?: string; timeline?: RunEventDTO[]; attachments?: { id: string; name: string; kind: string }[]; outcome?: { status: string; code?: string; reason?: string; toolSucceeded?: number; toolFailed?: number; succeededTools?: string[] } };
   status: string;
   seq: number;
   createdAt: string;
@@ -32,6 +32,7 @@ export interface RunEventDTO {
     | "tool.completed"
     | "tool.failed"
     | "transaction.updated"
+    | "provider.waiting"
     | "run.completed"
     | "run.failed"
     | "run.cancelled";

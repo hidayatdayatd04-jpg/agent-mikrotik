@@ -313,7 +313,8 @@ describe("audit alur cek koneksi ujung-ke-ujung (HTTP nyata, tanpa router)", () 
       const text = String((assistant?.content as { text?: string })?.text ?? "");
       expect(assistant?.status).toBe("failed");
       expect(text).toContain("UPSTREAM_INVALID_REQUEST");
-      expect(text).toContain("Hasil tool yang berhasil disimpan");
+      expect(text).toContain("1 berhasil, 0 gagal/ditolak");
+      expect(text).toContain("Lanjutkan pemeriksaan");
     } finally {
       server.stop(true);
     }

@@ -27,6 +27,7 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
   const [streamText, setStreamText] = useState("");
   const [toolActivity, setToolActivity] = useState<LiveToolItem[]>([]);
   const [txStatus, setTxStatus] = useState<string | null>(null);
+  const [queueStatus, setQueueStatus] = useState<string | null>(null);
   const doneRef = useRef(onDone);
   const finishRef = useRef<() => void>(() => {});
   const lastSeqRef = useRef(0);
@@ -39,6 +40,7 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
       setStreamText("");
       setToolActivity([]);
       setTxStatus(null);
+      setQueueStatus(null);
       setLive(false);
       finishRef.current = () => {};
       return;
@@ -47,6 +49,7 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
     setStreamText("");
     setToolActivity([]);
     setTxStatus(null);
+    setQueueStatus(null);
     setLive(true);
 
     let cancelled = false;
@@ -83,8 +86,14 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
         lastSeqRef.current = ev.seq;
         setEvents((prev) => [...prev, ev]);
         if (ev.type === "message.delta") {
+          setQueueStatus(null);
           setStreamText((prev) => prev + String((ev.payload as { text?: string }).text ?? ""));
+        } else if (ev.type === "provider.waiting") {
+          const p = ev.payload as { waitedMs?: number };
+          const secs = Math.max(1, Math.round(Number(p.waitedMs ?? 0) / 1000));
+          setQueueStatus(`Menunggu giliran provider · antre ${secs} dtk`);
         } else if (ev.type === "tool.started") {
+          setQueueStatus(null);
           const p = ev.payload as { name?: string; callId?: string };
           const name = String(p.name ?? "tool");
           const id = String(p.callId ?? `${name}-${ev.seq}`);
@@ -180,6 +189,7 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
         "tool.completed",
         "tool.failed",
         "transaction.updated",
+        "provider.waiting",
         "run.completed",
         "run.failed",
         "run.cancelled",
@@ -237,5 +247,5 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
     };
   }, [runId]);
 
-  return { events, streamText, toolActivity, txStatus, live };
+  return { events, streamText, toolActivity, txStatus, queueStatus, live };
 }

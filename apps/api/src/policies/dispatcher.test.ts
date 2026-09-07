@@ -180,12 +180,41 @@ describe("dispatcher re-checks", () => {
     if (!r.allowed) expect(r.code).toBe("TOOL_UNSUPPORTED");
 
     // defense in depth: even with a permissive catalog offering the gateway,
-    // inner write tool is refused
+    // an inner name outside the read-only catalog is refused as unknown
+    // (not WRITE_DISABLED — a typo must not advise enabling Write mode)
     const permissive = catalog.map((t) => (t.fqName === "mt:invoke_tool" ? { ...t, risk: "read" as const } : t));
     const d2 = makeDispatcher({ getMode: async () => live }, permissive);
     const r2 = await d2.check({ workspace: { userId: "u1" }, snapshot, toolFqName: "mt:invoke_tool", args: { name: "mt:add_address" } });
     expect(r2.allowed).toBe(false);
-    if (!r2.allowed) expect(r2.code).toBe("WRITE_DISABLED");
+    if (!r2.allowed) expect(r2.code).toBe("TOOL_UNSUPPORTED");
+
+    // ...but a KNOWN non-read inner is still refused as WRITE_DISABLED
+    const forcedRo: NormalizedTool[] = [
+      ...permissive.filter((t) => t.fqName !== "mt:add_address"),
+      { fqName: "mt:add_address", rawName: "add_address", origin: "upstream-mikrotik", risk: "write", classificationProvenance: "upstream-annotation", capabilities: [], inputSchema: { type: "object" }, description: "add", isGateway: false },
+    ];
+    const d3 = new PolicyDispatcher({
+      modeSource: { getMode: async () => live },
+      catalog: { getCatalog: async () => forcedRo },
+      validator: makeValidator(),
+      audit: (e) => AUDIT.push(e),
+    });
+    const r3 = await d3.check({ workspace: { userId: "u1" }, snapshot, toolFqName: "mt:invoke_tool", args: { name: "mt:add_address" } });
+    expect(r3.allowed).toBe(false);
+    if (!r3.allowed) expect(r3.code).toBe("WRITE_DISABLED");
+  });
+
+  test("gateway inner tak dikenal ditolak tanpa eksekusi (write mode)", async () => {
+    const liveWrite = { mode: "write" as const, version: 3 };
+    const d = makeDispatcher({ getMode: async () => liveWrite }, catalog);
+    const snap = { ...snapshot, mode: "write" as const, transactionState: "active" as const };
+    // Nama karangan model seperti "mt_run_routeros_command" (live bug 2026-09-08)
+    const r = await d.check({ workspace: { userId: "u1" }, snapshot: snap, toolFqName: "mt:invoke_tool", args: { name: "mt_run_routeros_command", arguments: { command: "/ip address print" } } });
+    expect(r.allowed).toBe(false);
+    if (!r.allowed) expect(r.code).toBe("TOOL_UNSUPPORTED");
+    // Inner yang benar-benar ada tetap diizinkan
+    const ok = await d.check({ workspace: { userId: "u1" }, snapshot: snap, toolFqName: "mt:invoke_tool", args: { name: "run_routeros_command", arguments: {} } });
+    expect(ok.allowed).toBe(true);
   });
 
   test("A30: LLM cannot set host/credential/target args", async () => {

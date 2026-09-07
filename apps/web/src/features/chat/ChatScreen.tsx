@@ -191,7 +191,7 @@ export function ChatScreen(props: { conversationId: string; activeConnector: Con
   }
 
   const hasMessages = (messages.data?.length ?? 0) > 0 || runEvents.live || !!runEvents.streamText;
-  const compactBusy = compaction.data?.jobs.some((j) => j.status === "queued" || j.status === "running") ?? false;
+  const compactBusy = compaction.data?.jobs?.some((j) => j.status === "queued" || j.status === "running") ?? false;
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -268,6 +268,7 @@ export function ChatScreen(props: { conversationId: string; activeConnector: Con
             toolActivity={runEvents.toolActivity}
             persistedActivities={activities.data ?? []}
             txStatus={runEvents.txStatus}
+            queueStatus={runEvents.queueStatus}
             runLive={runEvents.live}
             emptyTitle="Apa yang ingin Anda kerjakan?"
             onAnswerAsk={(label) => handleSend(label, [])}

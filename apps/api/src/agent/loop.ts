@@ -32,6 +32,7 @@ export interface RunEvent {
     | "tool.completed"
     | "tool.failed"
     | "transaction.updated"
+    | "provider.waiting"
     | "run.completed"
     | "run.failed"
     | "run.cancelled";
@@ -87,7 +88,8 @@ export const CONNECTION_CHECK_TOOL: NormalizedTool = {
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   description:
     "Cek status koneksi router LIVE dari server (terhubung/tidak, identitas, mode read-only/write, transaksi Safe Mode aktif/tidak). " +
-    "Panggil tool ini setiap kali ragu — misalnya pengguna mengklaim mode tulis aktif, atau perlu memastikan router sebelum membaca/menulis. " +
+    "Hanya panggil bila status koneksi/mode/transaksi memang belum jelas dari instruksi sistem atau sebelum operasi tulis pertama yang meragukan. " +
+    "Jangan panggil sebagai ritual wajib sebelum setiap pesan — sapaan dan pertanyaan umum dijawab langsung tanpa tool. " +
     "Hasilnya otoritatif untuk run ini; jangan menolak dengan alasan tidak bisa mengautentikasi klaim pengguna.",
   isGateway: false,
 };
@@ -168,6 +170,18 @@ export async function readConnectionStatus(
  * relevansi kata kunci terhadap pesan pengguna.
  */
 export const MAX_PROVIDER_TOOLS = 48;
+/** Batas ukuran total schema per request (~17rb token estimasi) agar payload tidak membengkak. */
+export const MAX_PROVIDER_SCHEMA_CHARS = 60_000;
+
+function schemaChars(t: NormalizedTool): number {
+  let schemaLen = 0;
+  try {
+    schemaLen = JSON.stringify(t.inputSchema ?? {}).length;
+  } catch {
+    schemaLen = 500;
+  }
+  return (t.description?.length ?? 0) + schemaLen + (t.fqName?.length ?? 0);
+}
 
 const CORE_ROUTER_READ_TOOLS = new Set([
   "list_interfaces",
@@ -183,7 +197,8 @@ const CORE_ROUTER_READ_TOOLS = new Set([
 ]);
 
 export function selectRelevantTools(catalog: NormalizedTool[], userText: string): NormalizedTool[] {
-  if (catalog.length <= MAX_PROVIDER_TOOLS) return catalog;
+  const totalSchema = catalog.reduce((n, t) => n + schemaChars(t), 0);
+  if (catalog.length <= MAX_PROVIDER_TOOLS && totalSchema <= MAX_PROVIDER_SCHEMA_CHARS) return catalog;
   const keywords = new Set(
     userText
       .toLowerCase()
@@ -202,10 +217,25 @@ export function selectRelevantTools(catalog: NormalizedTool[], userText: string)
     if (t.fqName.startsWith("docs:")) s += 5_000;
     return s;
   };
-  return [...catalog]
+  // Rangking menurun, isi rakus sampai batas jumlah ATAU ukuran schema —
+  // probe koneksi selalu ikut walau budget ketat.
+  const ranked = [...catalog]
     .map((t, i) => ({ t, s: score(t), i }))
-    .sort((a, b) => b.s - a.s || a.i - b.i)
-    .slice(0, MAX_PROVIDER_TOOLS)
+    .sort((a, b) => b.s - a.s || a.i - b.i);
+  const picked: typeof ranked = [];
+  let chars = 0;
+  for (const e of ranked) {
+    if (picked.length >= MAX_PROVIDER_TOOLS) break;
+    const c = schemaChars(e.t);
+    if (e.t.fqName !== CONNECTION_CHECK_FQ && chars + c > MAX_PROVIDER_SCHEMA_CHARS) continue;
+    picked.push(e);
+    chars += c;
+  }
+  if (!picked.some((e) => e.t.fqName === CONNECTION_CHECK_FQ)) {
+    const probe = ranked.find((e) => e.t.fqName === CONNECTION_CHECK_FQ);
+    if (probe) picked.push(probe);
+  }
+  return picked
     .sort((a, b) => a.i - b.i)
     .map((e) => e.t);
 }
@@ -236,6 +266,37 @@ export function canonicalKey(fq: string, args: unknown): string {
   } catch {
     return `${fq}\n${JSON.stringify(args)}`;
   }
+}
+
+/**
+ * Alihkan discovery yang tidak perlu ke tool langsung: bila kueri find_tools
+ * jelas cocok dengan tool non-discovery yang SUDAH ada di katalog run ini,
+ * kembalikan daftar tool langsung tanpa eksekusi pencarian — menghemat
+ * round-trip AI dan menuntun model memakai pembacaan langsung.
+ */
+export function findDirectToolsForQuery(query: unknown, catalog: NormalizedTool[]): NormalizedTool[] {
+  const raw = String(query ?? "").toLowerCase();
+  const normalized = raw
+    .replace(/\b(print|detail|list|export|show|get)\b/g, "")
+    .replace(/[^a-z0-9_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return [];
+  const tokens = normalized.split(" ").filter((w) => w.length >= 4);
+  const out: NormalizedTool[] = [];
+  for (const t of catalog) {
+    if (t.fqName.includes("find_tools") || t.fqName.includes("routeros_search")) continue;
+    const nameSpaced = t.rawName.toLowerCase().replace(/_/g, " ");
+    const nameFlat = t.rawName.toLowerCase().replace(/_/g, "");
+    const queryFlat = normalized.replace(/ /g, "");
+    if (nameSpaced.includes(normalized) || normalized.includes(nameSpaced) || nameFlat.includes(queryFlat) || queryFlat.includes(nameFlat)) {
+      out.push(t);
+      continue;
+    }
+    const hayTokens = new Set(`${t.rawName} ${(t.capabilities ?? []).join(" ")}`.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+    if (tokens.some((tok) => hayTokens.has(tok))) out.push(t);
+  }
+  return out.slice(0, 5);
 }
 
 export function createAgentLoop(deps: AgentRunDeps) {
@@ -406,6 +467,45 @@ export function createAgentLoop(deps: AgentRunDeps) {
       };
     }
     let result: { ok: boolean; output: string; errorCode?: string };
+    // Discovery yang tidak perlu dialihkan ke tool langsung yang sudah tersedia
+    // (tanpa eksekusi pencarian): hemat round-trip, tuntun model ke pembacaan langsung.
+    const isDiscovery = fqName.includes("find_tools") || fqName.includes("routeros_search");
+    const directRedirect = isDiscovery && decision.allowed
+      ? findDirectToolsForQuery(
+          (args as Record<string, unknown> | null)?.query ?? (args as Record<string, unknown> | null)?.search,
+          catalog,
+        )
+      : [];
+    if (directRedirect.length > 0) {
+      const names = directRedirect.map((t) => t.fqName).join(", ");
+      const redirectText =
+        `Pencarian tidak diperlukan — kemampuan ini sudah tersedia langsung: ${names}. ` +
+        `Panggil salah satu tool tersebut, bukan find_tools lagi.`;
+      const durationMs = Date.now() - started;
+      await deps.db
+        .insert(toolExecutions)
+        .values({
+          runId: input.runId,
+          toolCallId: call.id,
+          toolName: fqName,
+          risk: decision.tool.risk,
+          sanitizedInput: redactObject(args ?? {}),
+          resultSummary: redirectText.slice(0, 500),
+          status: "completed",
+          errorCode: null,
+          durationMs,
+        })
+        .onConflictDoNothing();
+      await emit({ type: "tool.completed", payload: { callId: call.id, name: fqName, summary: redirectText.slice(0, 1500), durationMs, index: toolIndex, redirected: true } });
+      return {
+        role: "tool",
+        content: JSON.stringify({ ok: true, output: redirectText, directTools: directRedirect.map((t) => t.fqName) }),
+        toolCallId: call.id,
+        note: `Discovery dialihkan ke tool langsung: ${names}`.slice(0, 500),
+        ok: true,
+        risk: decision.tool.risk,
+      };
+    }
     try {
       result = await input.executeTool({ fqName, args });
     } catch (err) {
@@ -440,7 +540,6 @@ export function createAgentLoop(deps: AgentRunDeps) {
     } else {
       await emit({ type: "tool.failed", payload: { callId: call.id, name: fqName, code: result.errorCode ?? "TOOL_FAILED", summary: redacted.slice(0, 1500), args: argsPreview, durationMs } });
     }
-    void catalog;
     // For failed tool results, add guidance so AI doesn't silently swallow errors.
     if (!result.ok) {
       const guidance = toolFailGuidance(result.errorCode ?? "TOOL_FAILED", fqName);
@@ -499,8 +598,13 @@ export function createAgentLoop(deps: AgentRunDeps) {
     let lastRequestCompletionTokens = 0;
     let aiRequests = 0;
     let toolCallsTotal = 0;
+    // Telemetri waktu: antrean limiter vs inferensi vs tools vs finalisasi.
+    let queueMsTotal = 0;
+    let queueWaits = 0;
+    let toolMsTotal = 0;
     // Ringkasan hasil tool per run — dipertahankan bila respons AI lanjutan gagal.
-    const toolResultNotes: string[] = [];
+    // Terstruktur (bukan klasifikasi substring): ok/errorCode dicatat saat eksekusi.
+    const toolOutcomes: { fq: string; note: string; ok: boolean; errorCode?: string }[] = [];
     const usageRecord = () => ({
       promptTokens: promptTokensTotal,
       completionTokens: completionTokensTotal,
@@ -508,6 +612,9 @@ export function createAgentLoop(deps: AgentRunDeps) {
       lastRequestOutputTokens: lastRequestCompletionTokens,
       aiRequests,
       toolCalls: toolCallsTotal,
+      queueMsTotal,
+      queueWaits,
+      toolMsTotal,
       modelLabel: input.client.modelLabel,
       source: promptTokensTotal + completionTokensTotal > 0 ? "provider" : "local",
     });
@@ -527,24 +634,25 @@ export function createAgentLoop(deps: AgentRunDeps) {
           failCode = "EMPTY_RESPONSE";
           failMessage = "Provider AI mengakhiri giliran tanpa memberikan teks jawaban atau pemanggilan tool.";
         }
-        // Temuan 3 fix: SELALU tambahkan penjelasan error/cancel untuk status non-completed,
-        // bahkan jika assistantText sudah berisi teks parsial.
-        const toolSucceeded = toolResultNotes.filter((n) => !n.includes("gagal") && !n.includes("ditolak"));
-        const toolFailed = toolResultNotes.filter((n) => n.includes("gagal") || n.includes("ditolak"));
-        const preserved: string[] = [];
-        if (toolSucceeded.length > 0) {
-          preserved.push(`Hasil tool yang berhasil disimpan (${toolSucceeded.length}):\n${toolSucceeded.slice(-4).map((n) => `- ${redactText(n).slice(0, 300)}`).join("\n")}`);
-        }
-        if (toolFailed.length > 0) {
-          preserved.push(`Tool gagal/ditolak (${toolFailed.length}):\n${toolFailed.slice(-4).map((n) => `- ${redactText(n).slice(0, 300)}`).join("\n")}`);
-        }
-        const preservedText = preserved.length > 0 ? `\n\n${preserved.join("\n\n")}` : "";
+        // Penutup kegagalan SELALU ditambahkan untuk status non-completed,
+        // bahkan bila assistantText sudah berisi teks parsial/preamble.
+        // Teks parsial dipertahankan; penutup menjelaskan alasan + ringkasan
+        // hitungan tool (detail per-tool sudah ada di timeline/events).
+        const succeeded = toolOutcomes.filter((t) => t.ok).length;
+        const failedTools = toolOutcomes.filter((t) => !t.ok).length;
+        const progressLine =
+          toolOutcomes.length > 0
+            ? `\nHasil yang sudah terbaca tetap tersimpan: ${succeeded} berhasil, ${failedTools} gagal/ditolak dari ${toolOutcomes.length} pemanggilan tool. Buka "Lihat detail" untuk output tiap tool.`
+            : "";
         if (finalStatus === "cancelled") {
           if (!assistantText.trim()) {
             assistantText = "(Run dibatalkan pengguna)";
           }
         } else {
-          const failureExplanation = `\n\n---\n⚠️ ${failCode ?? "RUN_FAILED"}: ${failMessage ?? "Terjadi kendala saat memproses permintaan."}${preservedText}`;
+          const failureExplanation =
+            `\n\n---\nPemeriksaan belum selesai (${failCode ?? "RUN_FAILED"}): ${failMessage ?? "Terjadi kendala saat memproses permintaan."}` +
+            `${progressLine}` +
+            `\nAnda dapat menekan "Lanjutkan pemeriksaan" untuk meneruskan sisa pekerjaan tanpa mengulang pembacaan yang sudah berhasil.`;
           assistantText += failureExplanation;
           await emitSeq({ type: "message.delta", payload: { text: failureExplanation } });
         }
@@ -555,10 +663,23 @@ export function createAgentLoop(deps: AgentRunDeps) {
         .from(messages)
         .where(eq(messages.conversationId, input.conversationId));
       const maxSeq = all.reduce((m, r) => Math.max(m, r.seq), 0);
+      const outcome =
+        finalStatus === "completed"
+          ? { status: "completed" as const, toolSucceeded: toolOutcomes.filter((t) => t.ok).length, toolFailed: toolOutcomes.filter((t) => !t.ok).length }
+          : {
+              status: finalStatus as "failed" | "cancelled",
+              code: failCode ?? "RUN_FAILED",
+              reason: failMessage ?? "Run gagal.",
+              toolSucceeded: toolOutcomes.filter((t) => t.ok).length,
+              toolFailed: toolOutcomes.filter((t) => !t.ok).length,
+              // Daftar fq tool yang sudah berhasil — dipakai tombol
+              // "Lanjutkan pemeriksaan" agar tidak mengulang pembacaan valid.
+              succeededTools: toolOutcomes.filter((t) => t.ok).map((t) => t.fq),
+            };
       await deps.db.insert(messages).values({
         conversationId: input.conversationId,
         role: "assistant",
-        content: { text: redactText(assistantText), runId: input.runId, timeline: redactObject(timeline) },
+        content: { text: redactText(assistantText), runId: input.runId, timeline: redactObject(timeline), outcome },
         status: finalStatus === "completed" ? "complete" : finalStatus,
         seq: maxSeq + 1,
       });
@@ -636,6 +757,44 @@ export function createAgentLoop(deps: AgentRunDeps) {
         chatHistory.pop();
       }
 
+      // "Lanjutkan pemeriksaan": muat ringkasan tool sukses dari run terakhir
+      // agar run baru tidak mengulang pembacaan yang masih valid. Tidak pernah
+      // memicu mutasi ulang — hanya hasil baca (risk=read, status completed).
+      if (/lanjutkan|teruskan|continue/i.test(input.userText)) {
+        try {
+          const { toolExecutions: toolTable, agentRuns: runsTable } = await import("../db/schema");
+          const lastRuns = await deps.db
+            .select({ id: runsTable.id })
+            .from(runsTable)
+            .where(eq(runsTable.conversationId, input.conversationId))
+            .orderBy(desc(runsTable.createdAt))
+            .limit(3);
+          const priorNotes: string[] = [];
+          for (const r of lastRuns) {
+            if (r.id === input.runId) continue;
+            const rows = await deps.db.select().from(toolTable).where(eq(toolTable.runId, r.id)).limit(20);
+            for (const row of rows) {
+              if (row.status === "completed" && row.risk === "read" && row.resultSummary) {
+                priorNotes.push(`- ${row.toolName}: ${String(row.resultSummary).slice(0, 300)}`);
+              }
+              if (priorNotes.length >= 6) break;
+            }
+            if (priorNotes.length >= 6) break;
+          }
+          if (priorNotes.length > 0) {
+            chatHistory.push({
+              role: "user",
+              content:
+                "[Hasil pembacaan sebelumnya yang masih tersimpan — pakai langsung bila masih valid, jangan diulang. " +
+                "Hanya baca ulang yang kedaluwarsa/diragukan, lalu kerjakan sisa yang belum selesai:]\n" +
+                priorNotes.join("\n"),
+            });
+          }
+        } catch {
+          /* resume assist non-fatal */
+        }
+      }
+
       // no router bound → documentation tools only; router tools would fail
       // ownership checks anyway and waste a provider turn.
       // The connection probe is always offered — it is how the model verifies
@@ -690,6 +849,13 @@ export function createAgentLoop(deps: AgentRunDeps) {
           onRequestAttempt: () => {
             aiRequests += 1;
           },
+          onQueueWait: (waitedMs) => {
+            queueMsTotal += Math.max(0, waitedMs);
+            queueWaits += 1;
+            if (waitedMs >= 1500) {
+              void emitSeq({ type: "provider.waiting", payload: { waitedMs: Math.round(waitedMs) } });
+            }
+          },
         })) {
           combinedController.signal.throwIfAborted();
           if (ev.type === "text" && ev.text) {
@@ -740,18 +906,23 @@ export function createAgentLoop(deps: AgentRunDeps) {
           failMessage = "Output provider terpotong karena batas token tercapai (finish_reason=length). Respons tidak lengkap.";
           break;
         }
+        if (stepFinishReason === "content_filter") {
+          finalStatus = "failed";
+          failCode = "CONTENT_FILTERED";
+          failMessage = "Respons provider dihentikan oleh filter konten (finish_reason=content_filter).";
+          break;
+        }
         if (stepToolCalls.length === 0) {
-          // Temuan 4: validate final turn separately from prior commentary.
-          // Empty final step after a prior preamble+tool turn is NOT completed.
+          // Giliran final kosong BUKAN jawaban selesai — bahkan bila giliran
+          // sebelumnya berisi preamble ("Saya akan memeriksa...") + tool.
+          // Preamble bukan sintesis hasil; model wajib menyimpulkan tool.
           if (!stepText.trim()) {
-            // If prior turns produced meaningful text (>20 chars), the run may still be
-            // considered completed as the assistant already answered.
-            const priorTextSubstantive = assistantText.replace(stepText, "").trim().length > 20;
-            if (!priorTextSubstantive) {
-              finalStatus = "failed";
-              failCode = "EMPTY_RESPONSE";
-              failMessage = "Provider AI mengakhiri giliran tanpa memberikan teks jawaban atau pemanggilan tool.";
-            }
+            finalStatus = "failed";
+            failCode = "EMPTY_RESPONSE";
+            failMessage =
+              toolCallsTotal > 0
+                ? "Provider AI mengakhiri giliran tanpa menyimpulkan hasil tool yang sudah dibaca."
+                : "Provider AI mengakhiri giliran tanpa memberikan teks jawaban atau pemanggilan tool.";
           } else {
             chatHistory.push({ role: "assistant", content: stepText });
           }
@@ -846,7 +1017,9 @@ export function createAgentLoop(deps: AgentRunDeps) {
             }
             toolMsg = { role: "tool", content: seen.content, toolCallId: call.id, note: seen.note, ok: seen.ok, errorCode: seen.errorCode, risk: seen.risk };
           } else {
+            const toolStart = Date.now();
             toolMsg = await runTool(input, call, fq, args, catalog, emitSeq, i);
+            toolMsTotal += Date.now() - toolStart;
             identicalCalls.set(loopKey, { count: (seen?.count ?? 0) + 1, content: toolMsg.content, note: toolMsg.note, ok: toolMsg.ok, errorCode: toolMsg.errorCode, risk: toolMsg.risk });
             // Dynamic schema injection: if discovery tool was called, add discovered tools to providerTools
             if (fq.includes("find_tools") || fq.includes("routeros_search")) {
@@ -874,7 +1047,7 @@ export function createAgentLoop(deps: AgentRunDeps) {
               }
             }
           }
-          toolResultNotes.push(`[${fq}] ${toolMsg.note}`.slice(0, 500));
+          toolOutcomes.push({ fq, note: toolMsg.note.slice(0, 500), ok: toolMsg.ok, errorCode: toolMsg.errorCode });
           chatHistory.push(toolMsg);
           // transaction-aware tool calls: only record SUCCESSFUL MUTATION tools
           if (input.policy.mode === "write" && toolMsg.ok && toolMsg.risk !== "read") {
@@ -965,7 +1138,7 @@ function policyDenialGuidance(code: string, toolName: string): string {
     case "VALIDATION_FAILED":
       return `Argumen tool tidak valid. Periksa parameter dan coba dengan argumen yang benar.`;
     case "TOOL_UNSUPPORTED":
-      return `Tool tidak tersedia di katalog saat ini. Jangan coba memanggil tool ini lagi.`;
+      return `Tool tidak tersedia dengan nama itu di katalog run ini. Jangan coba memanggil nama yang sama lagi — pilih nama persis dari daftar tools yang tersedia.`;
     default:
       return `Tool "${toolName}" ditolak dengan kode ${code}. Laporkan kode dan pesan error ke pengguna apa adanya.`;
   }
@@ -979,6 +1152,12 @@ function toolFailGuidance(errorCode: string, toolName: string): string {
     return (
       `Tool "${toolName}" gagal dieksekusi. Periksa output error di atas dan laporkan ke pengguna. ` +
       `Jangan mengklaim operasi berhasil — verifikasi dulu dengan tool baca sebelum membuat klaim apapun.`
+    );
+  }
+  if (errorCode === "TOOL_UNSUPPORTED") {
+    return (
+      `Tool "${toolName}" tidak tersedia dengan nama itu. Jangan ulangi nama yang sama — ` +
+      `pilih nama tool persis dari daftar tools yang tersedia (tanpa menambah prefix seperti "mt_").`
     );
   }
   return `Tool "${toolName}" error (${errorCode}). Laporkan ke pengguna apa adanya, jangan mengarang hasil.`;

@@ -195,6 +195,7 @@ export function ChatPanel(props: {
   toolActivity: ToolActivity[];
   persistedActivities?: ActivityEventDTO[];
   txStatus?: string | null;
+  queueStatus?: string | null;
   runLive: boolean;
   emptyTitle?: string;
   onSelectPrompt?: (prompt: string) => void;
@@ -223,7 +224,8 @@ export function ChatPanel(props: {
 
   useEffect(() => {
     if (nearBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      const reduced = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      bottomRef.current?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "end" });
     }
   }, [props.messages.length, props.streamText, props.toolActivity.length, props.runLive, props.persistedActivities?.length]);
 
@@ -294,7 +296,8 @@ export function ChatPanel(props: {
           onClick={() => {
             nearBottomRef.current = true;
             setShowJump(false);
-            bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+            const reduced = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+            bottomRef.current?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "end" });
           }}
           aria-label="Lompat ke pesan terbaru"
         >
@@ -425,7 +428,7 @@ export function ChatPanel(props: {
 
                         {timeline ? timeline.map((block) => (
                           <div key={block.key} className="my-2 first:mt-0 last:mb-0">
-                            {block.kind === "text" ? <AssistantBody text={block.text} onAnswerAsk={props.onAnswerAsk} onSendToTerminal={props.onSendToTerminal} /> : <RunPipeline steps={block.steps ?? [block.step]} defaultOpen overall={overall} />}
+                            {block.kind === "text" ? <AssistantBody text={block.text} onAnswerAsk={props.onAnswerAsk} onSendToTerminal={props.onSendToTerminal} /> : <RunPipeline steps={block.steps ?? [block.step]} defaultOpen={false} overall={overall} />}
                           </div>
                         )) : <>
                         {showPipeline && <div className="mb-3"><RunPipeline steps={pipeline!.steps} tx={pipeline!.tx} defaultOpen={false} overall={overall} /></div>}
@@ -443,9 +446,22 @@ export function ChatPanel(props: {
                         )}
                       </div>
 
-                      <div className="mt-1 flex items-center justify-start gap-2 text-[11px] text-muted-foreground">
+                      <div className="mt-1 flex flex-wrap items-center justify-start gap-2 text-[11px] text-muted-foreground">
                         {m.content.text && <CopyButton getText={() => m.content.text ?? ""} label="Salin Jawaban" />}
-                        {props.onResendPrompt && (
+                        {(m.status === "failed" || m.status === "cancelled") && props.onResendPrompt && (
+                          <Button
+                            variant="default"
+                            size="sm"
+                            className="h-7 px-3 text-xs bg-indigo-600 hover:bg-indigo-500 text-white gap-1 rounded-md transition-colors"
+                            onClick={() => {
+                              props.onResendPrompt?.("Lanjutkan pemeriksaan yang belum selesai.");
+                            }}
+                            title="Teruskan sisa pekerjaan memakai hasil tool yang sudah tersimpan"
+                          >
+                            <span>Lanjutkan pemeriksaan</span>
+                          </Button>
+                        )}
+                        {props.onResendPrompt && m.status !== "failed" && m.status !== "cancelled" && (
                           <Button
                             variant="ghost"
                             size="sm"
@@ -456,10 +472,10 @@ export function ChatPanel(props: {
                                 props.onResendPrompt?.(props.messages[idx - 1]!.content.text!);
                               }
                             }}
-                            title={m.status === "failed" ? "Coba lagi pemeriksaan" : "Kirim ulang pertanyaan ini"}
+                            title="Kirim ulang pertanyaan ini"
                           >
                             <RotateCcw className="size-3" />
-                            <span>{m.status === "failed" ? "Coba Lagi" : "Regenerate"}</span>
+                            <span>Regenerate</span>
                           </Button>
                         )}
                         {(m.status === "failed" || m.status === "cancelled") && props.onSendToTerminal && (
@@ -493,7 +509,7 @@ export function ChatPanel(props: {
           {props.runLive && !props.liveEvents?.length && liveSteps.length > 0 && (
             <RunPipeline
               steps={liveSteps}
-              defaultOpen
+              defaultOpen={false}
               live
               headerRight={
                 props.txStatus ? <span className="text-[11px] text-muted-foreground">{props.txStatus}</span> : undefined
@@ -509,7 +525,7 @@ export function ChatPanel(props: {
               <div className="max-w-[85%] sm:max-w-[80%] rounded-2xl rounded-tl-xs border border-border/70 bg-card/80 px-4 py-3.5 shadow-xs">
                 {props.liveEvents?.length ? buildRunTimeline(props.liveEvents, true).map((block) => (
                   <div key={block.key} className="my-2 first:mt-0 last:mb-0">
-                    {block.kind === "text" ? <Markdown text={stripAskBlocks(block.text)} onSendToTerminal={props.onSendToTerminal} /> : <RunPipeline steps={block.steps ?? [block.step]} defaultOpen live={(block.steps ?? [block.step]).some((s) => s.status === "running")} />}
+                    {block.kind === "text" ? <Markdown text={stripAskBlocks(block.text)} onSendToTerminal={props.onSendToTerminal} /> : <RunPipeline steps={block.steps ?? [block.step]} defaultOpen={false} live={(block.steps ?? [block.step]).some((s) => s.status === "running")} />}
                   </div>
                 )) : <Markdown text={stripAskBlocks(props.streamText)} onSendToTerminal={props.onSendToTerminal} />}
                 <span className="inline-block w-1.5 h-4 bg-cyan-500 animate-pulse ml-1 align-middle" />
@@ -518,7 +534,14 @@ export function ChatPanel(props: {
           )}
 
           {props.runLive && (!props.streamText || props.toolActivity.some((tool) => tool.status === "running")) && (
-            <div className="py-3"><ThinkingLogo /></div>
+            <div className="py-3" role="status" aria-live="polite">
+              <ThinkingLogo />
+              {(props.queueStatus || props.txStatus) && (
+                <p className="mt-1 text-center text-[11px] text-muted-foreground">
+                  {props.queueStatus ?? props.txStatus}
+                </p>
+              )}
+            </div>
           )}
 
           <div ref={bottomRef} />

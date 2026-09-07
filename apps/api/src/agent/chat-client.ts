@@ -61,6 +61,8 @@ export interface ChatClient {
     signal?: AbortSignal;
     /** Dipanggil setiap upaya HTTP ke provider (termasuk retry). Untuk pencatatan jumlah request AI. */
     onRequestAttempt?: () => void;
+    /** Dipanggil setelah keluar antrean rate limiter dengan lama tunggu (ms). */
+    onQueueWait?: (waitedMs: number) => void;
   }): AsyncGenerator<StreamEvent>;
   modelLabel: string;
 }
@@ -102,7 +104,8 @@ export function toProviderError(err: unknown, cfg: ProviderConfigWithKey): AppEr
     return new AppError(
       "UPSTREAM_INVALID_REQUEST",
       `Permintaan ditolak oleh provider AI (400, argumen tidak valid) pada ${cfg.name ?? cfg.kind} / ${cfg.model}. ` +
-        `Ini kesalahan format permintaan, bukan kuota — tidak di-retry agar kuota tidak terbuang. Detail: ${raw.slice(0, 300)}`,
+        `Ini kesalahan format permintaan, bukan kuota — tidak di-retry agar kuota tidak terbuang. ` +
+        `Bila gagal sejak request pertama, periksa Nama Model di menu Pengaturan (model mungkin tidak tersedia di endpoint ini). Detail: ${raw.slice(0, 300)}`,
       502,
     );
   }
@@ -197,7 +200,13 @@ export function buildProviderMessages(
         return {
           id: tc.id,
           type: "function" as const,
-          function: { name: tc.name, arguments: tc.argumentsJson || "{}" },
+          // Sanitasi argumen SEBELUM dikirim: model kadang memancarkan JSON
+          // tak lengkap (stream terpotong). Argumen parsial/non-objek yang
+          // digaungkan apa adanya memicu 400 "invalid argument" pada Gemini
+          // di request lanjutan — bukti live: 400 selalu menyusul
+          // VALIDATION_FAILED. Ganti dengan objek kosong yang valid; hasil
+          // tool (termasuk pesan validasi) tetap terkirim sebagai feedback.
+          function: { name: tc.name, arguments: sanitizeToolArguments(tc.argumentsJson) },
           // `extra_content` (mis. thought signature Gemini thinking) hanya
           // diteruskan ke Gemini; provider ketat lain menolak field tak dikenal (400).
           ...(providerKind === "gemini" && tc.extraContent !== undefined ? { extra_content: tc.extraContent } : {}),
@@ -221,6 +230,19 @@ export function buildProviderMessages(
     }
   }
   return out;
+}
+
+/** Argumen tool harus berupa objek JSON valid; selain itu kirim "{}" agar provider tidak 400. */
+export function sanitizeToolArguments(raw: string | null | undefined): string {
+  const s = (raw ?? "").trim();
+  if (!s) return "{}";
+  try {
+    const parsed: unknown = JSON.parse(s);
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) return s;
+    return "{}";
+  } catch {
+    return "{}";
+  }
 }
 
 /** Pastikan definisi tool berupa function-object valid; default schema kosong yang aman. */
@@ -389,6 +411,7 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
         try {
           try {
             input.onRequestAttempt?.();
+            try { input.onQueueWait?.(ticket.waitedMs); } catch { /* telemetry non-fatal */ }
             logger.debug("provider request attempt", {
               provider: cfg.kind,
               model: cfg.model,

@@ -150,8 +150,15 @@ export class PolicyDispatcher {
       // resolve inner name against the same catalog namespace
       const prefix = toolFqName.split(":")[0];
       const innerFq = inner.includes(":") ? inner : `${prefix}:${inner}`;
-      const innerTool = catalog.find((t) => t.fqName === innerFq);
-      if (!innerTool || innerTool.risk !== "read") {
+      const innerTool = catalog.find((t) => t.fqName === innerFq)
+        ?? catalog.find((t) => t.rawName === inner.replace(/^.*:/, ""));
+      if (!innerTool) {
+        // Nama tak dikenal di katalog read-only: bukan soal mode tulis —
+        // model salah nama. WRITE_DISABLED di sini menyesatkan (meminta
+        // toggle Write untuk typo), jadi tolak sebagai TOOL_UNSUPPORTED.
+        return this.deny(snapshot, toolFqName, "TOOL_UNSUPPORTED", `Tool target "${inner}" tidak dikenal dalam katalog run ini. Pilih nama tool dari daftar yang tersedia, jangan mengarang nama.`);
+      }
+      if (innerTool.risk !== "read") {
         return this.deny(snapshot, toolFqName, "WRITE_DISABLED", `Gateway tidak boleh memanggil tool non-read pada mode Read-Only.`);
       }
     }
@@ -160,6 +167,18 @@ export class PolicyDispatcher {
       const inner = (args as { name?: string } | null)?.name;
       if (inner && SAFE_MODE_LIFECYCLE_TOOLS.has(inner.replace(/^.*:/, ""))) {
         return this.deny(snapshot, toolFqName, "SAFE_MODE_UNAVAILABLE", "Tool ini hanya dikelola sistem (transaction coordinator), bukan oleh AI.");
+      }
+      // Unknown inner tool names (e.g. model mengarang "mt_run_routeros_command")
+      // ditolak sebelum eksekusi — MCP hanya mengembalikan teks error yang
+      // terlihat sukses sehingga model mengulanginya tanpa kemajuan.
+      if (inner) {
+        const prefix = toolFqName.split(":")[0];
+        const innerFq = inner.includes(":") ? inner : `${prefix}:${inner}`;
+        const known = catalog.some((t) => t.fqName === innerFq)
+          || catalog.some((t) => t.rawName === inner.replace(/^.*:/, ""));
+        if (!known) {
+          return this.deny(snapshot, toolFqName, "TOOL_UNSUPPORTED", `Tool target "${inner}" tidak dikenal dalam katalog run ini. Pilih nama tool dari daftar yang tersedia, jangan mengarang nama atau menambah prefix.`);
+        }
       }
     }
 

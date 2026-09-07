@@ -78,15 +78,29 @@ describe("pipeline pairing", () => {
 
   test("headline jujur: tool selesai tetapi jawaban gagal tidak boleh 'Selesai'", () => {
     // Kasus audit: 1 tool completed, lalu respons AI lanjutan 400 → run failed.
-    expect(runPipelineHeadline({ stepsCount: 1, txCount: 0, failedSteps: 0, overall: "failed" })).toMatchObject({
-      text: "Proses · 1 langkah · jawaban gagal",
+    // Status tool dan run dipisah: hitungan tool sukses dipertahankan.
+    const oneDone = [{ key: "a", index: 1, label: "Memeriksa koneksi & identitas", tool: "mt:get_identity", status: "completed" as const }];
+    expect(runPipelineHeadline({ stepsCount: 1, txCount: 0, failedSteps: 0, overall: "failed", steps: oneDone })).toMatchObject({
+      text: "Memeriksa koneksi & identitas · 1 dari 1 selesai · jawaban terhenti",
       tone: "bad",
     });
     expect(runPipelineHeadline({ stepsCount: 2, txCount: 0, failedSteps: 0, overall: "cancelled" }).text).toContain("dibatalkan");
-    // Run sukses tetap "Selesai" via tone ok.
+    // Run sukses tetap bernada ok.
     expect(runPipelineHeadline({ stepsCount: 1, txCount: 0, failedSteps: 0, overall: "completed" })).toMatchObject({ tone: "ok" });
-    expect(runPipelineHeadline({ stepsCount: 0, txCount: 0, failedSteps: 0 }).text).toBe("Menyiapkan proses…");
+    expect(runPipelineHeadline({ stepsCount: 0, txCount: 0, failedSteps: 0 }).text).toBe("Menyiapkan pemeriksaan…");
     // Live run tetap bernada sibuk, bukan gagal.
-    expect(runPipelineHeadline({ stepsCount: 1, txCount: 0, failedSteps: 0, live: true }).tone).toBe("ok");
+    expect(runPipelineHeadline({ stepsCount: 1, txCount: 0, failedSteps: 0, live: true }).tone).toBe("busy");
+  });
+
+  test("headline fase: batch baca vs mutasi", () => {
+    const reads = [
+      { key: "a", index: 1, label: "Membaca IP address", tool: "mt:list_ip_addresses", status: "completed" as const },
+      { key: "b", index: 2, label: "Membaca route", tool: "mt:list_routes", status: "completed" as const },
+    ];
+    expect(runPipelineHeadline({ stepsCount: 2, txCount: 0, failedSteps: 0, steps: reads }).text).toContain("Memeriksa konfigurasi router");
+    const writes = [{ key: "a", index: 1, label: "set identity", tool: "mt:set_identity", status: "completed" as const }];
+    expect(runPipelineHeadline({ stepsCount: 1, txCount: 0, failedSteps: 0, steps: writes }).text).toContain("Menerapkan perubahan");
+    expect(humanizeTool("mt:list_ip_addresses")).toBe("Membaca IP address");
+    expect(humanizeTool("mt:list_firewall_nat")).toBe("Membaca NAT");
   });
 });

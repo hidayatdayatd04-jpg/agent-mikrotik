@@ -137,7 +137,7 @@ describe("chat routes M10 (SQLite)", () => {
     await db.delete(workspaces).where(eq(workspaces.id, u!.id));
   });
 
-  test("write-mode run auto-begins a safe-mode transaction; read-only run does not", async () => {
+  test("write-mode run is lazy: no transaction until a mutation needs it; read-only run does not", async () => {
     if (!connected) return;
     const began: Parameters<StubTransactions["begin"]>[0][] = [];
     const settled: string[] = [];
@@ -179,10 +179,9 @@ describe("chat routes M10 (SQLite)", () => {
     });
     expect(res.status).toBe(201);
     await new Promise((r) => setTimeout(r, 150));
-    expect(began.length).toBe(1);
-    expect(began[0]?.runId).toBe((res.body as { runId: string }).runId);
-    // the stubbed loop records no RouterOS actions → empty tx is rolled back
-    expect(settled).toEqual(["rollback:tx-1"]);
+    // Stub loop melakukan no mutation → transaksi tidak pernah dibuka (lazy).
+    expect(began.length).toBe(0);
+    expect(settled).toEqual([]);
 
     // a read-only run never touches the transaction lifecycle
     began.length = 0;

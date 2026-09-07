@@ -16,6 +16,9 @@ interface Usage {
   lastRequestOutputTokens?: number;
   aiRequests?: number;
   toolCalls?: number;
+  queueMsTotal?: number;
+  queueWaits?: number;
+  toolMsTotal?: number;
   modelLabel?: string;
   source?: string;
 }
@@ -66,6 +69,12 @@ export function ContextMeter({ conversationId, running }: { conversationId?: str
         <div className="space-y-2 text-muted-foreground">
           <p className="flex justify-between gap-3"><span>Request AI (run terakhir)</span><span className="font-mono text-foreground">{typeof usage?.aiRequests === "number" ? number.format(usage.aiRequests) : "—"}</span></p>
           <p className="flex justify-between gap-3"><span>Tool dipanggil</span><span className="font-mono text-foreground">{typeof usage?.toolCalls === "number" ? number.format(usage.toolCalls) : "—"}</span></p>
+          {(typeof usage?.queueMsTotal === "number" || typeof usage?.toolMsTotal === "number") && (
+            <>
+              <p className="flex justify-between gap-3"><span>Antre provider</span><span className="font-mono text-foreground">{typeof usage?.queueMsTotal === "number" ? `${number.format(Math.round(usage.queueMsTotal / 1000))} dtk${typeof usage?.queueWaits === "number" && usage.queueWaits > 0 ? ` · ${usage.queueWaits}x` : ""}` : "—"}</span></p>
+              <p className="flex justify-between gap-3"><span>Waktu tools</span><span className="font-mono text-foreground">{typeof usage?.toolMsTotal === "number" ? `${number.format(Math.round(usage.toolMsTotal / 1000))} dtk` : "—"}</span></p>
+            </>
+          )}
           <p className="flex justify-between gap-3"><span>Kapasitas {model?.contextBasis === "input" ? "input" : "konteks"}</span><span className="font-mono text-foreground">{capacity ? `${number.format(capacity)} token` : "Belum tersedia"}</span></p>
           <p className="flex justify-between gap-3"><span>Input (request terakhir)</span><span className="font-mono text-foreground">{measured ? number.format(activeInputTokens!) : "—"}</span></p>
           <p className="flex justify-between gap-3"><span>Output (request terakhir)</span><span className="font-mono text-foreground">{measured && typeof activeOutputTokens === "number" ? number.format(activeOutputTokens) : "—"}</span></p>

@@ -559,6 +559,13 @@ export function createChatRoutes(deps: {
           if (conn.status !== "connected" || !conn.routerIdentity) {
             return { ok: false, error: "Router belum terhubung atau belum teridentifikasi." };
           }
+          // Fail fast tanpa membuka transaksi bila kredensial tersimpan kosong/tak terbaca.
+          try {
+            const secret = await deps.connectors.decryptCredential(workspace.userId, connectionId);
+            if (secret === "") return { ok: false, error: "Kredensial tersimpan kosong; perbarui connector." };
+          } catch {
+            return { ok: false, error: "Kredensial tersimpan tidak dapat dibaca; perbarui connector." };
+          }
           try {
             if (!deps.transactions) throw new Error("Layanan transaksi Safe Mode tidak tersedia.");
             const res = await deps.transactions.begin({
@@ -583,31 +590,28 @@ export function createChatRoutes(deps: {
             beginError = "Connector tidak tersedia.";
           }
         }
-        if (mode === "write" && connectionId) {
+        // Pre-check TANPA membuka transaksi (lazy): downgrade ke read-only hanya
+        // bila pemblokir sudah pasti diketahui (disconnect/identitas/kredensial).
+        // Kondisi sehat → mode write-otorisasi; transaksi dibuka lazily oleh
+        // loop tepat sebelum mutasi pertama via ensureTransaction.
+        if (mode === "write" && connectionId && !beginError) {
           try {
             emptyCredential = (await deps.connectors.decryptCredential(workspace.userId, connectionId)) === "";
           } catch {
             beginError = "Kredensial tersimpan tidak dapat dibaca; perbarui connector.";
           }
-          if (!readOnlyRequested && conn?.status === "connected" && conn.routerIdentity && emptyCredential === false) {
-            try {
-              if (!deps.transactions) throw new Error("Layanan transaksi Safe Mode tidak tersedia.");
-              const res = await deps.transactions.begin({
-                userId: workspace.userId,
-                connectionId,
-                routerIdentity: conn.routerIdentity,
-                runId: run!.id,
-                snapshotPlan: [{ name: "identity", command: "/system identity print" }],
-              });
-              txId = res.transactionId;
-            } catch (err) {
-              beginError = redactText(err instanceof Error ? err.message : String(err));
-            }
-          }
         }
-        const txActive = txId !== null;
-        const effectiveMode = (mode === "write" && !readOnlyRequested && txActive) ? "write" : "read-only";
-        const writeBlockNote = mode === "write" && !readOnlyRequested && !txActive
+        const preBlocked =
+          mode === "write" &&
+          !readOnlyRequested &&
+          (!!beginError || conn?.status !== "connected" || !conn?.routerIdentity || emptyCredential === true);
+        if (preBlocked && !beginError) {
+          beginError = !conn || conn.status !== "connected" || !conn.routerIdentity
+            ? "Router belum terhubung atau belum teridentifikasi."
+            : "Kredensial tersimpan kosong; perbarui connector.";
+        }
+        const effectiveMode = mode === "write" && !readOnlyRequested && !preBlocked ? "write" : "read-only";
+        const writeBlockNote = preBlocked
           ? diagnoseWriteBlock({ mode, connected: conn?.status === "connected", hasIdentity: !!conn?.routerIdentity, emptyCredential, beginError }).note
           : undefined;
         // per-run provider client (real provider bila dikonfigurasi; mock bila belum)
@@ -624,7 +628,6 @@ export function createChatRoutes(deps: {
           } catch {
             fallbackCandidates = [];
           }
-          const txActiveForCtx = txId !== null;
           const policyModeForCtx = readOnlyRequested ? "read-only" : mode;
           client = deps.makeClient(cfg, fallbackCandidates, {
             runId: run!.id,

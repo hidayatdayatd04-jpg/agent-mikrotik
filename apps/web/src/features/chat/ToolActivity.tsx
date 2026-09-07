@@ -32,10 +32,25 @@ export function isCompactionEvent(ev: ActivityEventDTO): boolean {
   return ev.type.startsWith("compaction.");
 }
 
+const HUMAN_TOOL_LABELS: [RegExp, string][] = [
+  [/check_connection/i, "Memeriksa status koneksi"],
+  [/list_ip_addresses|print_ip_address/i, "Membaca IP address"],
+  [/list_interfaces/i, "Membaca interface"],
+  [/list_routes|print_ip_route/i, "Membaca route"],
+  [/dhcp_client|get_dhcp_clients/i, "Membaca DHCP client"],
+  [/dhcp_server/i, "Membaca DHCP server"],
+  [/firewall_nat|list_firewall_nat/i, "Membaca NAT"],
+  [/firewall.*filter|list_firewall_rules/i, "Membaca firewall filter"],
+  [/system_resource|resource/i, "Membaca resource sistem"],
+  [/identity/i, "Memeriksa koneksi & identitas"],
+  [/find_tools|routeros_search/i, "Mencari tool yang sesuai"],
+];
+
 export function humanizeTool(name: string): string {
+  for (const [re, label] of HUMAN_TOOL_LABELS) {
+    if (re.test(name)) return label;
+  }
   const n = name.toLowerCase();
-  if (n.includes("check_connection")) return "Memeriksa status koneksi";
-  if (n.includes("identity")) return "Memeriksa koneksi & identitas";
   if (n.includes("terminal") || n.includes("exec") || n.includes("run_routeros") || n.includes("command")) {
     return "Menjalankan perintah RouterOS";
   }
@@ -43,6 +58,19 @@ export function humanizeTool(name: string): string {
   if (n.startsWith("docs:")) return "Mencari dokumentasi";
   const short = name.includes(":") ? name.split(":").slice(1).join(":") : name;
   return short.replace(/_/g, " ").slice(0, 48) || name;
+}
+
+/** Judul fase kerja yang manusiawi: pemeriksaan baca vs penerapan perubahan. */
+export function phaseTitle(steps: PipelineStep[]): string {
+  if (steps.length === 0) return "Menyiapkan pemeriksaan";
+  const writeish = /set_|add_|remove_|delete_|update_|enable|disable|create_|apply|reboot|reset/i;
+  const mutating = steps.some((s) => writeish.test(s.tool));
+  if (mutating) return "Menerapkan perubahan";
+  const allDone = steps.every((s) => s.status === "completed");
+  if (allDone && steps.length > 1) return "Memeriksa konfigurasi router";
+  const current = steps.find((s) => s.status === "running") ?? steps[steps.length - 1]!;
+  if (steps.length === 1) return current.label;
+  return "Memeriksa konfigurasi router";
 }
 
 export function formatDuration(ms: number | null | undefined): string | null {
@@ -149,17 +177,28 @@ export function runPipelineHeadline(input: {
   failedSteps: number;
   live?: boolean;
   overall?: RunOverall;
+  steps?: PipelineStep[];
 }): { text: string; tone: "ok" | "bad" | "busy" | "mute" } {
-  const { stepsCount, txCount, failedSteps, live, overall } = input;
-  if (stepsCount === 0 && txCount === 0) return { text: "Menyiapkan proses…", tone: "mute" };
-  // Run gagal/dibatalkan tidak boleh berlabel "Selesai" walau tool-nya selesai.
+  const { stepsCount, txCount, failedSteps, live, overall, steps } = input;
+  if (stepsCount === 0 && txCount === 0) return { text: "Menyiapkan pemeriksaan…", tone: "mute" };
+  const phase = phaseTitle(steps ?? []);
+  // Status tool dan status run dipisah: tool sukses tetap sukses walau run gagal.
   if (!live && overall === "failed") {
-    return { text: `Proses · ${stepsCount} langkah · jawaban gagal`, tone: "bad" };
+    const done = stepsCount - failedSteps;
+    return { text: `${phase} · ${done} dari ${stepsCount} selesai · jawaban terhenti`, tone: "bad" };
   }
   if (!live && overall === "cancelled") {
-    return { text: `Proses · ${stepsCount} langkah · dibatalkan`, tone: "mute" };
+    return { text: `${phase} · dibatalkan`, tone: "mute" };
   }
-  return { text: `Proses · ${stepsCount} langkah${failedSteps > 0 ? ` · ${failedSteps} gagal` : ""}`, tone: failedSteps > 0 ? "bad" : "ok" };
+  if (live) {
+    const done = (steps ?? []).filter((s) => s.status === "completed").length;
+    if (stepsCount > 1 && done < stepsCount) return { text: `${phase} · ${done} dari ${stepsCount}`, tone: "busy" };
+    return { text: phase, tone: "busy" };
+  }
+  if (failedSteps > 0) {
+    return { text: `${phase} · ${stepsCount - failedSteps} dari ${stepsCount} selesai`, tone: "bad" };
+  }
+  return { text: `${phase} · ${stepsCount} selesai`, tone: "ok" };
 }
 
 export function RunPipeline(props: {
@@ -183,6 +222,7 @@ export function RunPipeline(props: {
     failedSteps: failed,
     live: props.live,
     overall: props.overall ?? null,
+    steps: props.steps,
   });
 
   return (
@@ -192,6 +232,7 @@ export function RunPipeline(props: {
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs"
         aria-expanded={open}
+        aria-label={`${headline.text}. ${open ? "Tutup detail" : "Lihat detail"}`}
       >
         <span className="flex min-w-0 items-center gap-2 font-medium">
           {open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
@@ -211,8 +252,9 @@ export function RunPipeline(props: {
                     : "text-emerald-600 dark:text-emerald-400"
             }
           >
-            {status === "done" ? (headline.tone === "bad" ? "Langkah selesai" : "Selesai") : STATUS_LABEL[status as StepStatus] ?? status}
+            {status === "done" ? (headline.tone === "bad" ? "Sebagian selesai" : "Selesai") : STATUS_LABEL[status as StepStatus] ?? status}
           </span>
+          {!open && <span className="underline underline-offset-2">Lihat detail</span>}
         </span>
       </button>
       {open && (
