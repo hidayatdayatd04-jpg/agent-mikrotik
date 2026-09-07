@@ -3,13 +3,14 @@ import { getCookie } from "hono/cookie";
 import { verifySessionToken, SESSION_COOKIE } from "../services/auth";
 import { AppError } from "../lib/errors";
 import type { Database } from "../db";
+import type { WorkspaceContext } from "../lib/workspace";
 
 /**
  * Real session auth. Resolves the `ma_session` cookie into workspace+account.
- * - Public paths (login, health, static) pass through with null workspace.
+ * - Resolves cookies on every path, including public login/health/static paths.
  * - Test harnesses that pre-set `workspace` keep their value (bypass).
  * - All other /api/* requests without a valid session get workspace=null;
- *   downstream `requireWorkspace` helpers translate that into 401.
+ *   downstream `requireWorkspace`/`requireAuth` guards translate that into 401.
  */
 export function sessionAuth(db: Database): MiddlewareHandler {
   return async (c, next) => {
@@ -19,14 +20,6 @@ export function sessionAuth(db: Database): MiddlewareHandler {
       await next();
       return;
     }
-    const path = c.req.path;
-    const isPublic =
-      path === "/api/auth/login" ||
-      path === "/health/live" ||
-      path === "/health/ready" ||
-      path === "/api/ping" ||
-      (!path.startsWith("/api/") && !path.startsWith("/health/"));
-
     const token = getCookie(c, SESSION_COOKIE) ?? "";
     if (!token) {
       c.set("workspace" as never, null as never);
@@ -51,19 +44,25 @@ export function sessionAuth(db: Database): MiddlewareHandler {
       c.set("account" as never, null as never);
       c.set("sessionId" as never, null as never);
     }
-    void isPublic;
     await next();
   };
+}
+
+/** Require the workspace resolved by sessionAuth (or explicitly injected by tests). */
+export function requireWorkspace(c: { get: (k: "workspace") => unknown }): WorkspaceContext {
+  const workspace = c.get("workspace");
+  if (!workspace) throw new AppError("UNAUTHORIZED", "Session habis atau belum login. Silakan login kembali.", 401);
+  return workspace as WorkspaceContext;
 }
 
 /** Require a valid session; throws 401 when missing. Returns account+workspace. */
 export function requireAuth(c: {
   get: (k: "workspace" | "account" | "sessionId") => unknown;
 }): { userId: string; account: { id: string; workspaceId: string; username: string; displayName: string; loginAlias: string | null }; sessionId: string } {
-  const workspace = c.get("workspace") as { userId: string } | null;
+  const workspace = requireWorkspace(c);
   const account = c.get("account") as { id: string; workspaceId: string; username: string; displayName: string; loginAlias: string | null } | null;
   const sessionId = c.get("sessionId") as string | null;
-  if (!workspace || !account || !sessionId) {
+  if (!account || !sessionId) {
     throw new AppError("UNAUTHORIZED", "Session habis atau belum login. Silakan login kembali.", 401);
   }
   return { userId: workspace.userId, account, sessionId };

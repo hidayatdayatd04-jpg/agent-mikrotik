@@ -3,13 +3,12 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import type { Context } from "hono";
 import type { Env } from "../types";
-import { AppError } from "../lib/errors";
 import { RouterModeSchema } from "@shared/index";
 import type { ConnectorService } from "../services/connector";
 import type { McpSupervisor } from "../mcp/supervisor";
 import type { TransactionCoordinator } from "../transactions/coordinator";
 import type { Logger } from "../lib/logger";
-import type { WorkspaceContext } from "../lib/workspace";
+import { requireWorkspace } from "../middleware/session";
 
 import { discoverMikrotikRouters } from "../services/discovery";
 
@@ -239,12 +238,6 @@ export function createConnectorRoutes(deps: {
     await deps.connectors.remove(workspace.userId, c.req.param("id"));
     return c.json({ ok: true });
   });
-
-  function requireWorkspace(c: { get: (k: "workspace") => unknown }): WorkspaceContext {
-    const s = c.get("workspace");
-    if (!s) throw new AppError("UNAUTHORIZED", "Session habis atau belum login. Silakan login kembali.", 401);
-    return s as WorkspaceContext;
-  }
 
   return routes;
 }

@@ -6,7 +6,7 @@ import type { Env } from "../types";
 import type { Database } from "../db";
 import type { Logger } from "../lib/logger";
 import { AppError } from "../lib/errors";
-import type { WorkspaceContext } from "../lib/workspace";
+import { requireWorkspace } from "../middleware/session";
 import { terminalCommands, terminalSessions } from "../db/schema";
 import { openTerminalSession, submitTerminalCommand } from "../services/terminal";
 import type { ConnectorService } from "../services/connector";
@@ -29,11 +29,6 @@ export function createTerminalRoutes(deps: {
   transactions: TransactionCoordinator;
 }) {
   const routes = new Hono<Env>();
-  function requireWorkspace(c: { get: (k: "workspace") => unknown }): WorkspaceContext {
-    const s = c.get("workspace");
-    if (!s) throw new AppError("UNAUTHORIZED", "Session habis atau belum login.", 401);
-    return s as WorkspaceContext;
-  }
   const tdeps = {
     db: deps.db,
     logger: deps.logger,

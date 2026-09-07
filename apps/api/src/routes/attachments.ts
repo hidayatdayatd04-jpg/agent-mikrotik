@@ -5,7 +5,7 @@ import type { Database } from "../db";
 import { AppError } from "../lib/errors";
 import { attachments, conversations } from "../db/schema";
 import type { Logger } from "../lib/logger";
-import type { WorkspaceContext } from "../lib/workspace";
+import { requireWorkspace } from "../middleware/session";
 import type { StorageService, } from "../services/storage";
 import { detectContentKind } from "../services/storage";
 
@@ -17,12 +17,6 @@ export function createAttachmentRoutes(deps: {
   limits: { maxBytes: number; maxFilesPerMessage: number };
 }) {
   const routes = new Hono<Env>();
-
-  function requireWorkspace(c: { get: (k: "workspace") => unknown }): WorkspaceContext {
-    const s = c.get("workspace");
-    if (!s) throw new AppError("UNAUTHORIZED", "Session habis atau belum login. Silakan login kembali.", 401);
-    return s as WorkspaceContext;
-  }
 
   function requireStorage(): StorageService {
     if (!deps.storage) {

@@ -2,6 +2,79 @@ import { describe, expect, test } from "bun:test";
 import { applySafetyDefaults, classifyBatch, isLocalCommand, normalizeBare } from "./terminal-classifier";
 
 describe("terminal classifier (controlled RouterOS, no host shell)", () => {
+  test.each([
+    "/ip dhcp-server lease make-static number=0",
+    "/tool e-mail send to=test@example.com subject=hi body=hello",
+    "/tool sniffer start",
+  ])("aksi tanpa whitelist ditolak: %s", (command) => {
+    const result = classifyBatch(command);
+    expect(result.commands[0]!.risk).not.toBe("read");
+    expect(result.overall).toBe("unknown");
+    expect(result.blocked).not.toBeNull();
+    expect(result.commands[0]!.rollbackable).toBe(false);
+  });
+
+  test.each([
+    "/ip dhcp-server lease print detail",
+    "/ip firewall filter print stats",
+    "/ipv6 address print",
+    "/routing bgp session print",
+    "/queue simple print",
+    "/tool sniffer print",
+    "/system identity get name",
+    "/interface monitor ether1 once",
+    "/interface monitor-traffic ether1 once",
+    "/ip firewall export",
+    "/export compact",
+    "/tool ping 192.0.2.1 count=1",
+    "  /ip   dhcp-server lease print  ",
+  ])("verb baca eksplisit tetap diterima: %s", (command) => {
+    const result = classifyBatch(command);
+    expect(result.overall).toBe("read");
+    expect(result.blocked).toBeNull();
+  });
+
+  test.each([
+    "/ip dhcp-server",
+    "/ip firewall",
+    "/ipv6",
+    "/routing",
+    "/queue",
+    "/tool",
+    "/tool e-mail send to=test@example.com subject=print body=hello",
+    '/tool e-mail send to=test@example.com subject="please print this"',
+    "/tool sniffer start print",
+    "/ip dhcp-server lease make-static number=0 comment=get",
+    "/ip firewall filter reset-counters",
+    "/routing bgp session refresh numbers=0",
+    "/queue simple frobnicate comment=monitor",
+    "/ipv6 dhcp-client renew numbers=0",
+    "/tool sniffer stop",
+    "/system identity print-malicious",
+    "/system identity-other print",
+    "/system identity get name=[/tool sniffer start]",
+    '/system identity print where name="unterminated',
+    "/export file=backup",
+    "/ip firewall filter print file=rules",
+  ])("prefix/kata baca tidak memberikan izin: %s", (command) => {
+    const result = classifyBatch(command);
+    expect(result.overall).toBe("unknown");
+    expect(result.blocked).not.toBeNull();
+  });
+
+  test("satu aksi unknown memblokir seluruh batch termasuk bacaan valid", () => {
+    const result = classifyBatch("/system identity print; /tool sniffer start");
+    expect(result.commands.map((command) => command.risk)).toEqual(["read", "unknown"]);
+    expect(result.overall).toBe("unknown");
+    expect(result.blocked).not.toBeNull();
+  });
+
+  test("mutasi yang didukung tetap memerlukan jalur write", () => {
+    const result = classifyBatch('/ip firewall filter add chain=input action=accept comment="print"');
+    expect(result.overall).toBe("write");
+    expect(result.blocked).toBeNull();
+  });
+
   test("read sukses terklasifikasi", () => {
     const r = classifyBatch("/system identity print");
     expect(r.blocked).toBeNull();

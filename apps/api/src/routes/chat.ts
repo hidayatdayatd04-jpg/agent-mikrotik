@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Env } from "../types";
 import type { Database } from "../db";
 import { AppError } from "../lib/errors";
@@ -18,7 +18,7 @@ import { diagnoseWriteBlock } from "../agent/write-diagnostics";
 import { redactText } from "../lib/redaction";
 import { buildSystemInstruction } from "../agent/instructions";
 import { recordActivity } from "../services/activity";
-import { isGreetingOnly } from "../agent/intent";
+import { isGreetingOnly, isReadOnlyIntent } from "../agent/intent";
 
 /**
  * Conversations + runs (M7). Runs execute in the background (agent loop) and
@@ -544,6 +544,38 @@ export function createChatRoutes(deps: {
         let conn: Awaited<ReturnType<ReturnType<ConnectorService["requireOwned"]>>> | null = null;
         let beginError: string | null = null;
         let emptyCredential: boolean | null = null;
+        const readOnlyRequested = isReadOnlyIntent(input.text);
+
+        const ensureTransaction = async (): Promise<{ ok: boolean; transactionId?: string; error?: string }> => {
+          if (txId) return { ok: true, transactionId: txId };
+          if (!connectionId) return { ok: false, error: "Connector tidak tersedia." };
+          if (!conn) {
+            try {
+              conn = await deps.connectors.requireOwned(workspace.userId, connectionId)();
+            } catch {
+              return { ok: false, error: "Connector tidak tersedia." };
+            }
+          }
+          if (conn.status !== "connected" || !conn.routerIdentity) {
+            return { ok: false, error: "Router belum terhubung atau belum teridentifikasi." };
+          }
+          try {
+            if (!deps.transactions) throw new Error("Layanan transaksi Safe Mode tidak tersedia.");
+            const res = await deps.transactions.begin({
+              userId: workspace.userId,
+              connectionId,
+              routerIdentity: conn.routerIdentity,
+              runId: run!.id,
+              snapshotPlan: [{ name: "identity", command: "/system identity print" }],
+            });
+            txId = res.transactionId;
+            return { ok: true, transactionId: txId };
+          } catch (err) {
+            const msg = redactText(err instanceof Error ? err.message : String(err));
+            return { ok: false, error: msg };
+          }
+        };
+
         if (connectionId) {
           try {
             conn = await deps.connectors.requireOwned(workspace.userId, connectionId)();
@@ -557,7 +589,7 @@ export function createChatRoutes(deps: {
           } catch {
             beginError = "Kredensial tersimpan tidak dapat dibaca; perbarui connector.";
           }
-          if (conn?.status === "connected" && conn.routerIdentity && emptyCredential === false) {
+          if (!readOnlyRequested && conn?.status === "connected" && conn.routerIdentity && emptyCredential === false) {
             try {
               if (!deps.transactions) throw new Error("Layanan transaksi Safe Mode tidak tersedia.");
               const res = await deps.transactions.begin({
@@ -574,8 +606,8 @@ export function createChatRoutes(deps: {
           }
         }
         const txActive = txId !== null;
-        const effectiveMode = txActive ? mode : "read-only";
-        const writeBlockNote = mode === "write" && !txActive
+        const effectiveMode = (mode === "write" && !readOnlyRequested && txActive) ? "write" : "read-only";
+        const writeBlockNote = mode === "write" && !readOnlyRequested && !txActive
           ? diagnoseWriteBlock({ mode, connected: conn?.status === "connected", hasIdentity: !!conn?.routerIdentity, emptyCredential, beginError }).note
           : undefined;
         // per-run provider client (real provider bila dikonfigurasi; mock bila belum)
@@ -593,7 +625,7 @@ export function createChatRoutes(deps: {
             fallbackCandidates = [];
           }
           const txActiveForCtx = txId !== null;
-          const policyModeForCtx = txActiveForCtx ? mode : "read-only";
+          const policyModeForCtx = readOnlyRequested ? "read-only" : mode;
           client = deps.makeClient(cfg, fallbackCandidates, {
             runId: run!.id,
             conversationId: conv.id,
@@ -624,7 +656,16 @@ export function createChatRoutes(deps: {
             connectionId: connectionId ?? null,
             userMessageId: userMsg!.id,
             userText: input.text + attachmentNote,
-            policy: { userId: workspace.userId, connectionId: connectionId ?? "none", mode: effectiveMode, modeVersion, transactionState: txActive ? "active" : "none" },
+            policy: {
+              userId: workspace.userId,
+              connectionId: connectionId ?? "none",
+              mode: effectiveMode,
+              connectorMode: mode,
+              runMode: readOnlyRequested ? "read-only" : mode,
+              modeVersion,
+              transactionState: txId ? "active" : "none",
+            },
+            ensureTransaction,
             client,
             executeTool: (call) => {
               if (call.fqName.startsWith("docs:")) {
@@ -635,7 +676,7 @@ export function createChatRoutes(deps: {
               }
               return Promise.resolve({ ok: false, output: "Tidak ada router aktif pada percakapan ini.", errorCode: "TOOL_UNSUPPORTED" });
             },
-            systemInstruction: deps.buildInstruction({ mode: effectiveMode, routerLabel, modelLabel: client.modelLabel, txActive, writeBlockNote, memorySummary }),
+            systemInstruction: deps.buildInstruction({ mode: effectiveMode, routerLabel, modelLabel: client.modelLabel, txActive: txId !== null, writeBlockNote, memorySummary }),
           },
           (e) => {
             if (["run.completed", "run.failed", "run.cancelled"].includes(e.type)) terminalEvent = e;
@@ -670,6 +711,16 @@ export function createChatRoutes(deps: {
           if (status === "completed" && (state === "unknown" || (actions > 0 && state !== "committed"))) {
             status = "failed";
             terminalEvent = undefined;
+            // Temuan 2 fix: hanya update pesan assistant milik run terkait,
+            // bukan seluruh riwayat assistant di percakapan.
+            await deps.db
+              .update(messages)
+              .set({ status: "failed" })
+              .where(and(
+                eq(messages.conversationId, conv.id),
+                eq(messages.role, "assistant"),
+                sql`json_extract(${messages.content}, '$.runId') = ${run!.id}`,
+              ));
           }
         }
         await deps.db.update(agentRuns).set({ status, endedAt: new Date() }).where(eq(agentRuns.id, run!.id));

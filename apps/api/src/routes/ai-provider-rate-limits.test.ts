@@ -9,8 +9,89 @@ import { envKeyRing } from "../lib/crypto";
 import { AppError } from "../lib/errors";
 import type { Env } from "../types";
 import type { Logger } from "../lib/logger";
+import { sessionAuth } from "../middleware/session";
+import { createAuthRoutes } from "./auth";
+import { LOCAL_WORKSPACE_ID } from "../lib/workspace";
+import { SEED_USERNAME, SEED_PASSWORD } from "../services/auth";
 
 const logger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+
+async function checkpointHarness() {
+  const db = createDb(":memory:");
+  const providers = createProviderSettingsService({
+    db, logger, keyRing: envKeyRing({ 1: Buffer.alloc(32, 11).toString("base64") }, 1),
+  });
+  const checkpoints = new CheckpointStore();
+  const app = new Hono<Env>();
+  app.use("*", sessionAuth(db));
+  app.route("/api/auth", createAuthRoutes({ db, logger }));
+  app.route("/api/ai-provider", createAiProviderRoutes({ providers, logger, checkpoints }));
+  app.onError((err, c) => c.json({ error: { code: err instanceof AppError ? err.code : "INTERNAL_ERROR" } }, (err instanceof AppError ? err.status : 500) as 200));
+
+  function save(userId: string | null = LOCAL_WORKSPACE_ID) {
+    return checkpoints.save({
+      userId, runId: null, conversationId: null, userText: "cek", primaryModelKey: null,
+      attemptedModels: [], reason: "quota", fallbackReason: null, policyMode: "read-only", nextRetryAt: null,
+    });
+  }
+  async function login() {
+    const response = await app.request("/api/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: SEED_USERNAME, password: SEED_PASSWORD }),
+    });
+    expect(response.status).toBe(200);
+    return response.headers.get("set-cookie")!.split(";")[0]!;
+  }
+  return { app, checkpoints, save, login };
+}
+
+test.each([undefined, "ma_session=invalid-session-token-with-32-characters"])(
+  "DELETE checkpoint tanpa session valid mengembalikan 401 (%s), data tetap utuh",
+  async (cookie) => {
+    const { app, checkpoints, save } = await checkpointHarness();
+    const checkpoint = save();
+    const response = await app.request(`/api/ai-provider/rate-limits/checkpoints/${checkpoint.id}`, {
+      method: "DELETE", headers: cookie ? { Cookie: cookie } : {},
+    });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: { code: "UNAUTHORIZED" } });
+    expect(checkpoints.get(checkpoint.id)).toEqual(checkpoint);
+  },
+);
+
+test("DELETE checkpoint menghormati owner, checkpoint tanpa owner, dan ID tidak ditemukan", async () => {
+  const { app, checkpoints, save, login } = await checkpointHarness();
+  const cookie = await login();
+  const own = save();
+  const shared = save(null);
+  const other = save("other-workspace");
+  const list = await app.request("/api/ai-provider/rate-limits/checkpoints", { headers: { Cookie: cookie } });
+  const body = await list.json() as { checkpoints: { id: string }[] };
+  expect(body.checkpoints.map((cp) => cp.id).sort()).toEqual([own.id, shared.id].sort());
+  for (const id of [other.id, "nonexistent"]) {
+    const response = await app.request(`/api/ai-provider/rate-limits/checkpoints/${id}`, { method: "DELETE", headers: { Cookie: cookie } });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: { code: "NOT_FOUND" } });
+  }
+  expect(checkpoints.get(other.id)).toEqual(other);
+  for (const cp of [own, shared]) {
+    const response = await app.request(`/api/ai-provider/rate-limits/checkpoints/${cp.id}`, { method: "DELETE", headers: { Cookie: cookie } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(checkpoints.get(cp.id)).toBeNull();
+  }
+});
+
+test("DELETE checkpoint dengan cookie yang sudah logout mengembalikan 401", async () => {
+  const { app, checkpoints, save, login } = await checkpointHarness();
+  const cookie = await login();
+  const checkpoint = save();
+  const logout = await app.request("/api/auth/logout", { method: "POST", headers: { Cookie: cookie } });
+  expect(logout.status).toBe(200);
+  const response = await app.request(`/api/ai-provider/rate-limits/checkpoints/${checkpoint.id}`, { method: "DELETE", headers: { Cookie: cookie } });
+  expect(response.status).toBe(401);
+  expect(checkpoints.get(checkpoint.id)).toEqual(checkpoint);
+});
 
 test("GET /rate-limits menampilkan default 4 RPM/150k TPM, antrean, RPD, fallback, checkpoint", async () => {
   const db = createDb(":memory:");

@@ -6,7 +6,7 @@ import { AppError } from "../lib/errors";
 import { changeTransactions } from "../db/schema";
 import type { TransactionCoordinator } from "../transactions/coordinator";
 import type { Logger } from "../lib/logger";
-import type { WorkspaceContext } from "../lib/workspace";
+import { requireWorkspace } from "../middleware/session";
 
 /**
  * Owner-facing transaction endpoints (M6). The MODEL never calls these — the
@@ -120,12 +120,6 @@ export function createTransactionRoutes(deps: {
       },
     });
   });
-
-  function requireWorkspace(c: { get: (k: "workspace") => unknown }): WorkspaceContext {
-    const s = c.get("workspace");
-    if (!s) throw new AppError("UNAUTHORIZED", "Session habis atau belum login. Silakan login kembali.", 401);
-    return s as WorkspaceContext;
-  }
 
   return routes;
 }

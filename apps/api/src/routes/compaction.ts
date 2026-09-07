@@ -6,7 +6,7 @@ import type { Env } from "../types";
 import type { Database } from "../db";
 import type { Logger } from "../lib/logger";
 import { AppError } from "../lib/errors";
-import type { WorkspaceContext } from "../lib/workspace";
+import { requireWorkspace } from "../middleware/session";
 import { compactionJobs, conversations, conversationSummaries } from "../db/schema";
 import { latestSummary, startCompaction } from "../agent/compaction";
 import type { ChatClient } from "../agent/chat-client";
@@ -17,12 +17,6 @@ export function createCompactionRoutes(deps: {
   getProviderClient: (userId: string) => Promise<{ client: ChatClient; model: string; provider: string } | null>;
 }) {
   const routes = new Hono<Env>();
-
-  function requireWorkspace(c: { get: (k: "workspace") => unknown }): WorkspaceContext {
-    const s = c.get("workspace");
-    if (!s) throw new AppError("UNAUTHORIZED", "Session habis atau belum login.", 401);
-    return s as WorkspaceContext;
-  }
 
   async function requireOwned(userId: string, conversationId: string) {
     const [conv] = await deps.db

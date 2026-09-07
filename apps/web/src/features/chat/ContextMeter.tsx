@@ -12,6 +12,8 @@ interface ModelContext {
 interface Usage {
   promptTokens?: number;
   completionTokens?: number;
+  lastRequestInputTokens?: number;
+  lastRequestOutputTokens?: number;
   aiRequests?: number;
   toolCalls?: number;
   modelLabel?: string;
@@ -36,7 +38,15 @@ export function ContextMeter({ conversationId, running }: { conversationId?: str
   const model = metadata.data?.context;
   const usage = snapshot.data?.usage;
   const measured = usage?.source === "provider" && usage.modelLabel === model?.modelLabel && typeof usage.promptTokens === "number";
-  const used = measured ? usage.promptTokens! + (model?.contextBasis === "total" ? usage.completionTokens ?? 0 : 0) : null;
+  const activeInputTokens = typeof usage?.lastRequestInputTokens === "number" && usage.lastRequestInputTokens > 0
+    ? usage.lastRequestInputTokens
+    : usage?.promptTokens;
+  const activeOutputTokens = typeof usage?.lastRequestOutputTokens === "number" && usage.lastRequestOutputTokens > 0
+    ? usage.lastRequestOutputTokens
+    : usage?.completionTokens;
+  const used = measured && typeof activeInputTokens === "number"
+    ? activeInputTokens + (model?.contextBasis === "total" ? (activeOutputTokens ?? 0) : 0)
+    : null;
   const capacity = model?.contextWindow;
   const percent = used !== null && capacity ? used / capacity * 100 : null;
   const percentLabel = percent === null ? null : new Intl.NumberFormat("id-ID", { maximumFractionDigits: 1 }).format(percent);
@@ -55,9 +65,13 @@ export function ContextMeter({ conversationId, running }: { conversationId?: str
         <p className="mb-3 break-all font-medium">{model?.model ?? provider.data?.model ?? "Provider belum diatur"}</p>
         <div className="space-y-2 text-muted-foreground">
           <p className="flex justify-between gap-3"><span>Request AI (run terakhir)</span><span className="font-mono text-foreground">{typeof usage?.aiRequests === "number" ? number.format(usage.aiRequests) : "—"}</span></p>
-          <p className="flex justify-between gap-3"><span>Tool dipanggil</span><span className="font-mono text-foreground">{typeof usage?.toolCalls === "number" ? number.format(usage.toolCalls) : "—"}</span></p>          <p className="flex justify-between gap-3"><span>Kapasitas {model?.contextBasis === "input" ? "input" : "konteks"}</span><span className="font-mono text-foreground">{capacity ? `${number.format(capacity)} token` : "Belum tersedia"}</span></p>
-          <p className="flex justify-between gap-3"><span>Input terakhir</span><span className="font-mono text-foreground">{measured ? number.format(usage.promptTokens!) : "—"}</span></p>
-          <p className="flex justify-between gap-3"><span>Output terakhir</span><span className="font-mono text-foreground">{measured && typeof usage.completionTokens === "number" ? number.format(usage.completionTokens) : "—"}</span></p>
+          <p className="flex justify-between gap-3"><span>Tool dipanggil</span><span className="font-mono text-foreground">{typeof usage?.toolCalls === "number" ? number.format(usage.toolCalls) : "—"}</span></p>
+          <p className="flex justify-between gap-3"><span>Kapasitas {model?.contextBasis === "input" ? "input" : "konteks"}</span><span className="font-mono text-foreground">{capacity ? `${number.format(capacity)} token` : "Belum tersedia"}</span></p>
+          <p className="flex justify-between gap-3"><span>Input (request terakhir)</span><span className="font-mono text-foreground">{measured ? number.format(activeInputTokens!) : "—"}</span></p>
+          <p className="flex justify-between gap-3"><span>Output (request terakhir)</span><span className="font-mono text-foreground">{measured && typeof activeOutputTokens === "number" ? number.format(activeOutputTokens) : "—"}</span></p>
+          {usage?.aiRequests && usage.aiRequests > 1 && (
+            <p className="flex justify-between gap-3 text-[11px] opacity-75"><span>Total input kumulatif</span><span className="font-mono">{measured && typeof usage?.promptTokens === "number" ? number.format(usage.promptTokens) : "—"}</span></p>
+          )}
           <p className="border-t border-border pt-3 leading-relaxed">{measured ? "Hitungan asli dari provider untuk permintaan terakhir, termasuk instruksi dan tool. Diperbarui saat provider melaporkan usage." : "Pemakaian belum dilaporkan provider. Angka tidak diperkirakan dari panjang teks."}</p>
           {metadata.isError && <p>Metadata model belum dapat diambil.</p>}
         </div>

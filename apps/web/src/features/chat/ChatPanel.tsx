@@ -425,7 +425,7 @@ export function ChatPanel(props: {
 
                         {timeline ? timeline.map((block) => (
                           <div key={block.key} className="my-2 first:mt-0 last:mb-0">
-                            {block.kind === "text" ? <AssistantBody text={block.text} onAnswerAsk={props.onAnswerAsk} onSendToTerminal={props.onSendToTerminal} /> : <RunPipeline steps={[block.step]} defaultOpen overall={overall} />}
+                            {block.kind === "text" ? <AssistantBody text={block.text} onAnswerAsk={props.onAnswerAsk} onSendToTerminal={props.onSendToTerminal} /> : <RunPipeline steps={block.steps ?? [block.step]} defaultOpen overall={overall} />}
                           </div>
                         )) : <>
                         {showPipeline && <div className="mb-3"><RunPipeline steps={pipeline!.steps} tx={pipeline!.tx} defaultOpen={false} overall={overall} /></div>}
@@ -443,28 +443,39 @@ export function ChatPanel(props: {
                         )}
                       </div>
 
-                      {m.content.text && (
-                        <div className="mt-1 flex items-center justify-start gap-2 text-[11px] text-muted-foreground">
-                          <CopyButton getText={() => m.content.text ?? ""} label="Salin Jawaban" />
-                          {props.onResendPrompt && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/80 gap-1 rounded-md transition-colors"
-                              onClick={() => {
-                                const idx = props.messages.findIndex((msg) => msg.id === m.id);
-                                if (idx > 0 && props.messages[idx - 1]?.content.text) {
-                                  props.onResendPrompt?.(props.messages[idx - 1]!.content.text!);
-                                }
-                              }}
-                              title="Kirim ulang pertanyaan ini"
-                            >
-                              <RotateCcw className="size-3" />
-                              <span>Regenerate</span>
-                            </Button>
-                          )}
-                        </div>
-                      )}
+                      <div className="mt-1 flex items-center justify-start gap-2 text-[11px] text-muted-foreground">
+                        {m.content.text && <CopyButton getText={() => m.content.text ?? ""} label="Salin Jawaban" />}
+                        {props.onResendPrompt && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/80 gap-1 rounded-md transition-colors"
+                            onClick={() => {
+                              const idx = props.messages.findIndex((msg) => msg.id === m.id);
+                              if (idx > 0 && props.messages[idx - 1]?.content.text) {
+                                props.onResendPrompt?.(props.messages[idx - 1]!.content.text!);
+                              }
+                            }}
+                            title={m.status === "failed" ? "Coba lagi pemeriksaan" : "Kirim ulang pertanyaan ini"}
+                          >
+                            <RotateCcw className="size-3" />
+                            <span>{m.status === "failed" ? "Coba Lagi" : "Regenerate"}</span>
+                          </Button>
+                        )}
+                        {(m.status === "failed" || m.status === "cancelled") && props.onSendToTerminal && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-xs text-indigo-500 hover:text-indigo-400 hover:bg-indigo-500/10 gap-1 rounded-md transition-colors"
+                            onClick={() => {
+                              props.onSendToTerminal?.("/system resource print");
+                            }}
+                            title="Buka status router di terminal"
+                          >
+                            <span>Periksa di Terminal</span>
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -498,7 +509,7 @@ export function ChatPanel(props: {
               <div className="max-w-[85%] sm:max-w-[80%] rounded-2xl rounded-tl-xs border border-border/70 bg-card/80 px-4 py-3.5 shadow-xs">
                 {props.liveEvents?.length ? buildRunTimeline(props.liveEvents, true).map((block) => (
                   <div key={block.key} className="my-2 first:mt-0 last:mb-0">
-                    {block.kind === "text" ? <Markdown text={stripAskBlocks(block.text)} onSendToTerminal={props.onSendToTerminal} /> : <RunPipeline steps={[block.step]} defaultOpen live={block.step.status === "running"} />}
+                    {block.kind === "text" ? <Markdown text={stripAskBlocks(block.text)} onSendToTerminal={props.onSendToTerminal} /> : <RunPipeline steps={block.steps ?? [block.step]} defaultOpen live={(block.steps ?? [block.step]).some((s) => s.status === "running")} />}
                   </div>
                 )) : <Markdown text={stripAskBlocks(props.streamText)} onSendToTerminal={props.onSendToTerminal} />}
                 <span className="inline-block w-1.5 h-4 bg-cyan-500 animate-pulse ml-1 align-middle" />

@@ -39,6 +39,17 @@ function makeCatalog(): NormalizedTool[] {
       description: "Cari dokumentasi RouterOS",
       isGateway: false,
     },
+    {
+      fqName: "mt:set_identity",
+      rawName: "set_identity",
+      origin: "upstream-mikrotik",
+      risk: "write",
+      classificationProvenance: "upstream-annotation",
+      capabilities: [],
+      inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+      description: "Ubah nama router",
+      isGateway: false,
+    },
   ];
 }
 
@@ -61,10 +72,12 @@ function makeScriptedClient(script: { toolCalls?: ChatToolCall[]; text: string; 
 }
 
 const stubDispatcher = {
-  check: async (input: { toolFqName: string }) =>
-    input.toolFqName === "docs:routeros_search"
-      ? { allowed: true as const, tool: makeCatalog()[0] }
-      : { allowed: false as const, code: "TOOL_NOT_FOUND", message: "tidak ada" },
+  check: async (input: { toolFqName: string }) => {
+    const tool = makeCatalog().find((t) => t.fqName === input.toolFqName);
+    return tool
+      ? { allowed: true as const, tool }
+      : { allowed: false as const, code: "TOOL_NOT_FOUND", message: "tidak ada" };
+  },
 };
 
 const stubCoordinator = { recordAction: () => {}, getActionCount: () => 0 };
@@ -378,7 +391,7 @@ describe("agent loop (unit, SQLite)", () => {
     });
     const events: RunEvent[] = [];
     const client = makeScriptedClient([
-      { toolCalls: [{ id: "call-1", name: "docs_routeros_search", argumentsJson: '{"query":"x"}' }], text: "" },
+      { toolCalls: [{ id: "call-1", name: "mt_set_identity", argumentsJson: '{"name":"x"}' }], text: "" },
       { text: "Mutasi tercatat dalam transaksi." },
     ]);
     await loop.run(

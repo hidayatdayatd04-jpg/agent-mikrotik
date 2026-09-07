@@ -3,17 +3,12 @@ import { and, eq } from "drizzle-orm";
 import type { Env } from "../types";
 import type { Database } from "../db";
 import { AppError } from "../lib/errors";
-import type { WorkspaceContext } from "../lib/workspace";
+import { requireWorkspace } from "../middleware/session";
 import { conversations } from "../db/schema";
 import { listActivities } from "../services/activity";
 
 export function createActivityRoutes(deps: { db: Database }) {
   const routes = new Hono<Env>();
-  function requireWorkspace(c: { get: (k: "workspace") => unknown }): WorkspaceContext {
-    const s = c.get("workspace");
-    if (!s) throw new AppError("UNAUTHORIZED", "Session habis atau belum login.", 401);
-    return s as WorkspaceContext;
-  }
   routes.get("/api/conversations/:id/activities", async (c) => {
     const ws = requireWorkspace(c);
     const [conv] = await deps.db

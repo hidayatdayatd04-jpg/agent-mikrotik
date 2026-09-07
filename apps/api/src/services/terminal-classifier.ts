@@ -2,32 +2,79 @@
 
 export type CommandRisk = "read" | "write" | "unknown";
 
-const READ_PREFIXES = [
-  "/system identity print",
-  "/system resource print",
-  "/system clock print",
-  "/system routerboard print",
-  "/system package print",
-  "/system history print",
-  "/interface print",
-  "/interface monitor",
-  "/ip address print",
-  "/ip route print",
-  "/ip arp print",
+// Exact reviewed menus, never a blanket permission for every action below a family.
+// New menus/diagnostics need explicit review before being admitted as reads.
+const READ_MENUS = new Set([
+  "/system identity",
+  "/system resource",
+  "/system clock",
+  "/system routerboard",
+  "/system package",
+  "/system history",
+  "/system script",
+  "/system scheduler",
+  "/interface",
+  "/ip address",
+  "/ip route",
+  "/ip arp",
   "/ip dhcp-server",
-  "/ip dns print",
+  "/ip dhcp-server lease",
+  "/ip dhcp-server network",
+  "/ip dhcp-server option",
+  "/ip dhcp-server option sets",
+  "/ip dns",
   "/ip firewall",
+  "/ip firewall filter",
+  "/ip firewall nat",
+  "/ip firewall mangle",
+  "/ip firewall raw",
+  "/ip firewall address-list",
+  "/ip firewall connection",
+  "/ip firewall service-port",
   "/ipv6",
+  "/ipv6 address",
+  "/ipv6 route",
+  "/ipv6 neighbor",
+  "/ipv6 nd",
+  "/ipv6 nd prefix",
+  "/ipv6 settings",
+  "/ipv6 dhcp-client",
+  "/ipv6 dhcp-server",
+  "/ipv6 pool",
+  "/ipv6 firewall filter",
+  "/ipv6 firewall nat",
+  "/ipv6 firewall mangle",
+  "/ipv6 firewall raw",
+  "/ipv6 firewall address-list",
+  "/ipv6 firewall connection",
   "/routing",
+  "/routing route",
+  "/routing rule",
+  "/routing table",
+  "/routing bgp connection",
+  "/routing bgp session",
+  "/routing bgp template",
+  "/routing ospf instance",
+  "/routing ospf area",
+  "/routing ospf interface-template",
+  "/routing ospf interface",
+  "/routing ospf neighbor",
+  "/routing filter rule",
   "/queue",
-  "/tool",
-  "/log print",
-  "/ping",
-  "/traceroute",
-  "/system script print",
-  "/system scheduler print",
-  "/export",
-];
+  "/queue simple",
+  "/queue tree",
+  "/queue type",
+  "/queue interface",
+  "/tool e-mail",
+  "/tool sniffer",
+  "/tool sniffer packet",
+  "/log",
+]);
+const READ_VERBS = new Set(["print", "monitor", "export", "get"]);
+const READ_COMMANDS = new Set([
+  "/ping", "/traceroute", "/trace", "/export",
+  "/tool ping", "/tool traceroute", "/interface monitor-traffic",
+]);
 
 const WRITE_VERBS = ["add", "remove", "set", "unset", "enable", "disable", "move", "reset", "reboot", "shutdown"];
 
@@ -87,27 +134,30 @@ function singleRisk(cmd: string): { risk: CommandRisk; reason: string } {
     if (pat.test(norm)) return { risk: "unknown", reason: `Pola berisiko/dinamis ditolak: ${pat.source.slice(0, 40)}.` };
   }
   const lower = norm.toLowerCase();
-  // ping/traceroute standalone are reads (with safety count injected at exec time)
-  if (/^\/(ping|traceroute|trace)(\s|$)/.test(lower)) {
-    return { risk: "read", reason: "Perintah baca terklasifikasi." };
+  // Dynamic expressions and ambiguous quoting cannot be validated by this simple runner.
+  if (/[\[\]{}\\]/.test(norm) || (norm.match(/"/g)?.length ?? 0) % 2 !== 0) {
+    return { risk: "unknown", reason: "Ekspresi dinamis atau kutipan ambigu ditolak." };
   }
   if (/bandwidth-test|speed-test/i.test(lower)) {
     return { risk: "unknown", reason: "bandwidth-test ditolak di terminal (long-running & membebani link). Gunakan /interface monitor-traffic." };
-  }
-  // print/monitor/export/get are reads
-  if (/\bprint\b|\bmonitor\b|\bexport\b|\bget\b/.test(lower) && !WRITE_VERBS.some((v) => lower.includes(` ${v} `) || lower.endsWith(` ${v}`))) {
-    // Ensure it matches a known read family; otherwise unknown (don't guess).
-    const known = READ_PREFIXES.some((p) => lower.startsWith(p.toLowerCase().split(" print")[0]!));
-    if (known) return { risk: "read", reason: "Perintah baca terklasifikasi." };
   }
   for (const v of WRITE_VERBS) {
     if (lower.includes(` ${v} `) || lower.endsWith(` ${v}`) || lower.includes(`/${v}`)) {
       return { risk: "write", reason: `Mutasi terdeteksi (${v}).` };
     }
   }
-  // Exact known reads
-  if (READ_PREFIXES.some((p) => lower === p.toLowerCase() || lower.startsWith(p.toLowerCase() + " "))) {
-    return { risk: "read", reason: "Perintah baca terklasifikasi." };
+  // Match the operation immediately after an exact menu, never words in argument values.
+  // print/export file= writes a router file and is outside this read-only whitelist.
+  if (/(?:^|\s)file\s*=/.test(lower)) {
+    return { risk: "unknown", reason: "Penulisan file router tidak diizinkan sebagai perintah baca." };
+  }
+  const words = lower.split(/\s+/);
+  for (let i = 0; i < words.length; i++) {
+    const path = words.slice(0, i + 1).join(" ");
+    const menu = words.slice(0, i).join(" ");
+    if (READ_COMMANDS.has(path) || (READ_MENUS.has(menu) && READ_VERBS.has(words[i]!))) {
+      return { risk: "read", reason: "Perintah baca terklasifikasi." };
+    }
   }
   return { risk: "unknown", reason: "Perintah tidak dikenali; tolak daripada menebak." };
 }

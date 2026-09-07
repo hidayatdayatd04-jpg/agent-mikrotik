@@ -6,7 +6,7 @@ import { AppError } from "../lib/errors";
 import type { ProviderSettingsService, ProviderKind } from "../agent/provider-settings";
 import { fetchProviderModels } from "../agent/model-fetch";
 import type { Logger } from "../lib/logger";
-import type { WorkspaceContext } from "../lib/workspace";
+import { requireWorkspace } from "../middleware/session";
 
 /**
  * AI provider settings + model auto-fetch (Multi-Provider with isolation).
@@ -142,8 +142,14 @@ export function createAiProviderRoutes(deps: {
   });
 
   routes.delete("/rate-limits/checkpoints/:id", async (c) => {
+    const workspace = requireWorkspace(c);
     const store = deps.checkpoints ?? (await import("../agent/rate-limiter")).globalCheckpoints;
-    const ok = store.remove(c.req.param("id"));
+    const id = c.req.param("id");
+    const checkpoint = store.get(id);
+    if (!checkpoint || (checkpoint.userId && checkpoint.userId !== workspace.userId)) {
+      throw new AppError("NOT_FOUND", "Checkpoint tidak ditemukan.", 404);
+    }
+    const ok = store.remove(id);
     if (!ok) throw new AppError("NOT_FOUND", "Checkpoint tidak ditemukan.", 404);
     return c.json({ ok: true });
   });
@@ -251,12 +257,6 @@ export function createAiProviderRoutes(deps: {
     });
     return c.json({ models: result.models, source: result.source });
   });
-
-  function requireWorkspace(c: { get: (k: "workspace") => unknown }): WorkspaceContext {
-    const s = c.get("workspace");
-    if (!s) throw new AppError("UNAUTHORIZED", "Session habis atau belum login. Silakan login kembali.", 401);
-    return s as WorkspaceContext;
-  }
 
   return routes;
 }

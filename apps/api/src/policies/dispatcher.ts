@@ -10,9 +10,13 @@ import type { NormalizedTool } from "./normalize";
 export interface PolicySnapshot {
   userId: string;
   connectionId: string;
-  /** mode/version as of the moment the agent run started */
+  /** effective mode for this run (intersection of connector + run intent) */
   mode: "read-only" | "write";
+  /** original connector mode from DB — used solely for CAS race detection (defaults to mode) */
+  connectorMode?: "read-only" | "write";
   modeVersion: number;
+  /** run-level mode constraint (e.g. read-only request even when connector has write enabled) */
+  runMode?: "read-only" | "write";
   /** transaction state on this connection (M6) */
   transactionState: "none" | "active";
 }
@@ -99,29 +103,32 @@ export class PolicyDispatcher {
     // 1. live mode re-check (CAS race: OFF from another tab).
     //    A no-router run ("none") is pinned to read-only + version 0: only
     //    docs tools can pass, and no connector permission row exists to race.
+    //    Compare against connectorMode (the original connector mode at run start),
+    //    NOT snapshot.mode (which may be downgraded by read-only intent).
     const live =
       snapshot.connectionId === "none"
         ? { mode: "read-only" as const, version: 0 }
         : await this.deps.modeSource.getMode(snapshot.userId, snapshot.connectionId);
-    if (live.mode !== snapshot.mode || live.version !== snapshot.modeVersion) {
+    const expectedConnectorMode = snapshot.connectorMode ?? snapshot.mode;
+    if (live.mode !== expectedConnectorMode || live.version !== snapshot.modeVersion) {
       return this.deny(snapshot, toolFqName, "POLICY_CHANGED", "Mode connector berubah selama run berlangsung. Mulai ulang percakapan.");
     }
-    if (live.mode === "read-only") {
-      // any mutation attempt is dead here — even before tool lookup
-    }
+    // effectiveMode = intersection of connector permissions and run intent.
+    // runMode can only RESTRICT (never elevate) connector permissions.
+    const effectiveMode = (snapshot.runMode === "read-only" || snapshot.mode === "read-only") ? "read-only" : live.mode;
 
     // 2. tool must exist in the catalog FOR THE CURRENT MODE
-    const catalog = await this.deps.catalog.getCatalog(live.mode);
+    const catalog = await this.deps.catalog.getCatalog(effectiveMode);
     const tool = catalog.find((t) => t.fqName === toolFqName);
     if (!tool) {
-      return this.deny(snapshot, toolFqName, "TOOL_UNSUPPORTED", live.mode === "read-only"
+      return this.deny(snapshot, toolFqName, "TOOL_UNSUPPORTED", effectiveMode === "read-only"
         ? `Tool tidak tersedia dalam mode Read-Only. Untuk menjalankan perubahan, aktifkan Write dari panel connector (bukan oleh AI).`
         : `Tool tidak ditemukan dalam katalog run ini.`);
     }
 
     // 3. risk vs mode
-    if (live.mode === "read-only" && tool.risk !== "read") {
-      return this.deny(snapshot, toolFqName, "WRITE_DISABLED", `Mode Read-Only aktif; tool ${tool.risk} tidak diizinkan.`);
+    if (effectiveMode === "read-only" && tool.risk !== "read") {
+      return this.deny(snapshot, toolFqName, "WRITE_DISABLED", `Mode percakapan saat ini Read-Only; tool ${tool.risk} tidak diizinkan.`);
     }
     if (tool.risk === "unknown") {
       return this.deny(snapshot, toolFqName, "TOOL_UNSUPPORTED", "Tool belum lolos review klasifikasi risiko dan tidak diizinkan.");
@@ -135,7 +142,7 @@ export class PolicyDispatcher {
     // 4. gateway tools: on read-only they can only reach read tools; the inner
     //    call is re-dispatched through check() so the effective tool+args are
     //    validated, not the outer label.
-    if (tool.isGateway && live.mode === "read-only") {
+    if (tool.isGateway && effectiveMode === "read-only") {
       const inner = (args as { name?: string; arguments?: unknown } | null)?.name;
       if (!inner) {
         return this.deny(snapshot, toolFqName, "VALIDATION_FAILED", "Gateway tool memerlukan nama tool target.");
@@ -173,7 +180,7 @@ export class PolicyDispatcher {
 
     // 7. transaction state: mutations outside an active safe-mode transaction
     //    are rejected once M6 wires the real transaction manager in.
-    if (live.mode === "write" && tool.risk !== "read" && snapshot.transactionState !== "active") {
+    if (effectiveMode === "write" && tool.risk !== "read" && snapshot.transactionState !== "active") {
       return this.deny(snapshot, toolFqName, "SAFE_MODE_UNAVAILABLE", "Mutasi hanya diizinkan dalam transaksi Safe Mode aktif (M6).");
     }
 

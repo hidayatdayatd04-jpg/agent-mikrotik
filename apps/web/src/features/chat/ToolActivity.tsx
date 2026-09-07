@@ -202,14 +202,16 @@ export function RunPipeline(props: {
           {totalLabel && <span>{totalLabel}</span>}
           <span
             className={
-              status === "failed" || headline.tone === "bad"
+              status === "failed"
                 ? "text-destructive"
                 : status === "running"
                   ? "text-indigo-500"
-                  : "text-emerald-600 dark:text-emerald-400"
+                  : headline.tone === "bad"
+                    ? "text-amber-500"
+                    : "text-emerald-600 dark:text-emerald-400"
             }
           >
-            {headline.tone === "bad" && status === "done" ? "Gagal" : status === "done" ? "Selesai" : STATUS_LABEL[status as StepStatus] ?? status}
+            {status === "done" ? (headline.tone === "bad" ? "Langkah selesai" : "Selesai") : STATUS_LABEL[status as StepStatus] ?? status}
           </span>
         </span>
       </button>

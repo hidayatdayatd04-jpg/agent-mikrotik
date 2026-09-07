@@ -1,6 +1,6 @@
 # MikroTik Agent
 
-Chat AI untuk router MikroTik, berjalan di laptop dengan Bun. Tanpa akun atau login. Web dan API berjalan bersama; data tersimpan sebagai file lokal.
+Chat AI untuk router MikroTik, berjalan di laptop dengan Bun. Satu akun lokal dibuat otomatis (seed) dan mengakses satu workspace melalui session cookie. Web dan API berjalan bersama; data tersimpan sebagai file lokal.
 
 ## Instalasi
 
@@ -29,6 +29,8 @@ Pada Windows, pastikan `bun.exe` tersedia di PATH; shim CLI global tidak dapat m
 
 ## Pemakaian
 
+Login dengan username **mikrotik-agent** atau alias literal **mikrotikagent**, serta password awal **mikrotik123**. Password default **wajib diganti setelah login pertama** melalui **Pengaturan → Keamanan & Safe Mode → Ubah password**. Akun dibuat secara idempotent; restart tidak mereset password. Password default tidak ditampilkan di halaman login.
+
 1. Isi provider, API key, dan model melalui **Provider AI** (Gemini, OpenRouter, atau endpoint OpenAI-compatible).
 2. Tambahkan router melalui **Connector**. SSH diuji sebelum kredensial disimpan.
 3. Buat chat dan pilih router. Mode awal Read-Only; Write melalui pengaman backend dan Safe Mode.
@@ -48,13 +50,13 @@ Default: `~/.mikrotik-agent` atau `C:/Users/<nama>/.mikrotik-agent`.
 
 | File/folder | Isi |
 | --- | --- |
-| agent.sqlite | Chat, pesan, connector, provider, audit, transaksi |
+| agent.sqlite | Akun lokal, hash password, session server, chat, pesan, connector, provider, audit, transaksi |
 | credential.key | Key enkripsi password router dan API key |
 | attachments/ | Lampiran lokal |
 | corpus/ros-help.db | Dokumentasi RouterOS |
 | runtime.lock | Pencegah dua CLI memakai data bersamaan |
 
-Browser memakai localStorage hanya untuk preferensi tampilan. Backup seluruh folder setelah aplikasi berhenti; database dan key harus dipulihkan bersama.
+Browser memakai cookie **ma_session** dengan HttpOnly dan SameSite=Lax untuk autentikasi; Secure diaktifkan pada HTTPS. Token login tidak disimpan di localStorage, yang hanya dipakai untuk preferensi tampilan. Backup seluruh folder setelah aplikasi berhenti; database dan key harus dipulihkan bersama.
 
 ## Development dan verifikasi
 
