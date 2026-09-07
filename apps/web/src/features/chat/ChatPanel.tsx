@@ -318,6 +318,9 @@ export function ChatPanel(props: {
             const pipeline = runActs && runActs.length > 0 ? buildPipeline(runActs) : null;
             const showPipeline = !!pipeline && pipeline.steps.length > 0;
             const timeline = m.content.timeline?.length ? buildRunTimeline(m.content.timeline) : null;
+            // Status run keseluruhan: pipeline tool yang selesai tidak boleh
+            // berlabel "Selesai" bila jawaban akhirnya gagal/dibatalkan.
+            const overall = m.status === "failed" ? "failed" as const : m.status === "cancelled" ? "cancelled" as const : null;
 
             return (
               <div
@@ -422,10 +425,10 @@ export function ChatPanel(props: {
 
                         {timeline ? timeline.map((block) => (
                           <div key={block.key} className="my-2 first:mt-0 last:mb-0">
-                            {block.kind === "text" ? <AssistantBody text={block.text} onAnswerAsk={props.onAnswerAsk} onSendToTerminal={props.onSendToTerminal} /> : <RunPipeline steps={[block.step]} defaultOpen />}
+                            {block.kind === "text" ? <AssistantBody text={block.text} onAnswerAsk={props.onAnswerAsk} onSendToTerminal={props.onSendToTerminal} /> : <RunPipeline steps={[block.step]} defaultOpen overall={overall} />}
                           </div>
                         )) : <>
-                        {showPipeline && <div className="mb-3"><RunPipeline steps={pipeline!.steps} tx={pipeline!.tx} defaultOpen={false} /></div>}
+                        {showPipeline && <div className="mb-3"><RunPipeline steps={pipeline!.steps} tx={pipeline!.tx} defaultOpen={false} overall={overall} /></div>}
                         {m.content.text ? (
                           <AssistantBody text={m.content.text} onAnswerAsk={props.onAnswerAsk} onSendToTerminal={props.onSendToTerminal} />
                         ) : (
@@ -435,7 +438,7 @@ export function ChatPanel(props: {
 
                         {m.status && m.status !== "complete" && m.status !== "completed" && (
                           <p className="mt-1 text-[11px] text-muted-foreground/80">
-                            Status: {m.status}
+                            Status: {m.status === "failed" ? "Gagal" : m.status === "cancelled" ? "Dibatalkan" : m.status}
                           </p>
                         )}
                       </div>

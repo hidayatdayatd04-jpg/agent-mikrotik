@@ -140,12 +140,36 @@ export function pipelineStatus(steps: PipelineStep[]): StepStatus | "done" {
   return "done";
 }
 
+/** Status run keseluruhan (bukan hanya langkah tool) untuk headline jujur. */
+export type RunOverall = "completed" | "failed" | "cancelled" | null;
+
+export function runPipelineHeadline(input: {
+  stepsCount: number;
+  txCount: number;
+  failedSteps: number;
+  live?: boolean;
+  overall?: RunOverall;
+}): { text: string; tone: "ok" | "bad" | "busy" | "mute" } {
+  const { stepsCount, txCount, failedSteps, live, overall } = input;
+  if (stepsCount === 0 && txCount === 0) return { text: "Menyiapkan proses…", tone: "mute" };
+  // Run gagal/dibatalkan tidak boleh berlabel "Selesai" walau tool-nya selesai.
+  if (!live && overall === "failed") {
+    return { text: `Proses · ${stepsCount} langkah · jawaban gagal`, tone: "bad" };
+  }
+  if (!live && overall === "cancelled") {
+    return { text: `Proses · ${stepsCount} langkah · dibatalkan`, tone: "mute" };
+  }
+  return { text: `Proses · ${stepsCount} langkah${failedSteps > 0 ? ` · ${failedSteps} gagal` : ""}`, tone: failedSteps > 0 ? "bad" : "ok" };
+}
+
 export function RunPipeline(props: {
   steps: PipelineStep[];
   tx?: PipelineTx[];
   defaultOpen?: boolean;
   headerRight?: ReactNode;
   live?: boolean;
+  /** Status akhir run; bila failed/cancelled, headline tidak boleh "Selesai". */
+  overall?: RunOverall;
 }) {
   const [open, setOpen] = useState(!!props.defaultOpen);
   const [openStep, setOpenStep] = useState<string | null>(null);
@@ -153,10 +177,13 @@ export function RunPipeline(props: {
   const totalMs = props.steps.reduce((n, s) => n + (typeof s.durationMs === "number" ? s.durationMs : 0), 0);
   const totalLabel = totalMs > 0 ? formatDuration(totalMs) : null;
   const failed = props.steps.filter((s) => s.status === "failed").length;
-  const headline =
-    props.steps.length === 0 && (props.tx?.length ?? 0) === 0
-      ? "Menyiapkan proses…"
-      : `Proses · ${props.steps.length} langkah${failed > 0 ? ` · ${failed} gagal` : ""}`;
+  const headline = runPipelineHeadline({
+    stepsCount: props.steps.length,
+    txCount: props.tx?.length ?? 0,
+    failedSteps: failed,
+    live: props.live,
+    overall: props.overall ?? null,
+  });
 
   return (
     <div className="rounded-xl border border-border/70 bg-muted/30">
@@ -168,21 +195,21 @@ export function RunPipeline(props: {
       >
         <span className="flex min-w-0 items-center gap-2 font-medium">
           {open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
-          <span className="truncate">{headline}</span>
+          <span className="truncate">{headline.text}</span>
         </span>
         <span className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
           {props.headerRight}
           {totalLabel && <span>{totalLabel}</span>}
           <span
             className={
-              status === "failed"
+              status === "failed" || headline.tone === "bad"
                 ? "text-destructive"
                 : status === "running"
                   ? "text-indigo-500"
                   : "text-emerald-600 dark:text-emerald-400"
             }
           >
-            {status === "done" ? "Selesai" : STATUS_LABEL[status as StepStatus] ?? status}
+            {headline.tone === "bad" && status === "done" ? "Gagal" : status === "done" ? "Selesai" : STATUS_LABEL[status as StepStatus] ?? status}
           </span>
         </span>
       </button>

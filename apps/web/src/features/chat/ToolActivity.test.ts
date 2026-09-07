@@ -5,6 +5,7 @@ import {
   humanizeTool,
   isCompactionEvent,
   isManualTerminalEvent,
+  runPipelineHeadline,
 } from "./ToolActivity";
 import type { ActivityEventDTO } from "./chat-hooks";
 
@@ -73,5 +74,19 @@ describe("pipeline pairing", () => {
     expect(formatDuration(2100)).toBe("2,1 dtk");
     expect(formatDuration(350)).toBe("350 mdtk");
     expect(formatDuration(null)).toBeNull();
+  });
+
+  test("headline jujur: tool selesai tetapi jawaban gagal tidak boleh 'Selesai'", () => {
+    // Kasus audit: 1 tool completed, lalu respons AI lanjutan 400 → run failed.
+    expect(runPipelineHeadline({ stepsCount: 1, txCount: 0, failedSteps: 0, overall: "failed" })).toMatchObject({
+      text: "Proses · 1 langkah · jawaban gagal",
+      tone: "bad",
+    });
+    expect(runPipelineHeadline({ stepsCount: 2, txCount: 0, failedSteps: 0, overall: "cancelled" }).text).toContain("dibatalkan");
+    // Run sukses tetap "Selesai" via tone ok.
+    expect(runPipelineHeadline({ stepsCount: 1, txCount: 0, failedSteps: 0, overall: "completed" })).toMatchObject({ tone: "ok" });
+    expect(runPipelineHeadline({ stepsCount: 0, txCount: 0, failedSteps: 0 }).text).toBe("Menyiapkan proses…");
+    // Live run tetap bernada sibuk, bukan gagal.
+    expect(runPipelineHeadline({ stepsCount: 1, txCount: 0, failedSteps: 0, live: true }).tone).toBe("ok");
   });
 });

@@ -59,6 +59,8 @@ export interface ChatClient {
     tools: ChatToolDefinition[];
     maxTokens: number;
     signal?: AbortSignal;
+    /** Dipanggil setiap upaya HTTP ke provider (termasuk retry). Untuk pencatatan jumlah request AI. */
+    onRequestAttempt?: () => void;
   }): AsyncGenerator<StreamEvent>;
   modelLabel: string;
 }
@@ -79,14 +81,14 @@ export function toProviderError(err: unknown, cfg: ProviderConfigWithKey): AppEr
     const retryNote = retryMatch ? ` Silakan tunggu ${retryMatch[1]} sebelum mencoba lagi.` : "";
     if (isDailyQuotaError(status === 0 ? 429 : status, raw)) {
       return new AppError(
-        "UPSTREAM_ERROR",
-        `Kuota harian provider habis pada ${cfg.name ?? cfg.kind} / ${cfg.model}.${retryNote} Penggunaan model ini dihentikan sementara sampai kuota tersedia kembali; sistem akan memakai model cadangan bila tersedia. Detail: ${raw.slice(0, 300)}`,
+        "UPSTREAM_QUOTA_EXHAUSTED",
+        `Kuota harian provider habis (429) pada ${cfg.name ?? cfg.kind} / ${cfg.model}.${retryNote} Penggunaan model ini dihentikan sementara sampai kuota tersedia kembali; sistem akan memakai model cadangan bila tersedia. Permintaan ini tidak di-retry. Detail: ${raw.slice(0, 300)}`,
         502,
       );
     }
     return new AppError(
-      "UPSTREAM_ERROR",
-      `Rate limit / kuota tercapai (429) pada ${cfg.name ?? cfg.kind} / ${cfg.model}.${retryNote} Batas dapat berlaku bersama pada akun/project; mengganti model belum tentu mereset kuota. Lihat status limit di Provider AI. Detail: ${raw.slice(0, 300)}`,
+      "UPSTREAM_RATE_LIMITED",
+      `Rate limit provider tercapai (429) pada ${cfg.name ?? cfg.kind} / ${cfg.model}.${retryNote} Batas dapat berlaku bersama pada akun/project; mengganti model belum tentu mereset kuota. Lihat status limit di Provider AI. Detail: ${raw.slice(0, 300)}`,
       502,
     );
   }
@@ -97,7 +99,12 @@ export function toProviderError(err: unknown, cfg: ProviderConfigWithKey): AppEr
     return new AppError("UPSTREAM_ERROR", `Nama model tidak ditemukan pada provider (404). Periksa Nama Model di menu Pengaturan atau klik "Ambil Daftar Model". Detail: ${raw.slice(0, 250)}`, 502);
   }
   if (status === 400) {
-    return new AppError("UPSTREAM_ERROR", `Permintaan ditolak oleh provider AI (400). Detail: ${raw.slice(0, 300)}`, 502);
+    return new AppError(
+      "UPSTREAM_INVALID_REQUEST",
+      `Permintaan ditolak oleh provider AI (400, argumen tidak valid) pada ${cfg.name ?? cfg.kind} / ${cfg.model}. ` +
+        `Ini kesalahan format permintaan, bukan kuota — tidak di-retry agar kuota tidak terbuang. Detail: ${raw.slice(0, 300)}`,
+      502,
+    );
   }
   if (status >= 500) {
     return new AppError("UPSTREAM_ERROR", `Provider mengalami gangguan (${status}). Coba lagi sebentar. Detail: ${raw.slice(0, 250)}`, 502);
@@ -116,6 +123,140 @@ export interface RateLimitedClientOptions {
   limiter?: CentralRateLimiter;
   /** Batas retry untuk 429 rate-limit biasa (bukan kuota harian). Default dari limiter. */
   maxRetries?: number;
+}
+
+/**
+ * Bentuk wire OpenAI-compatible yang dikirim ke provider.
+ * `content` SELALU string (tidak pernah null): endpoint OpenAI-compatible
+ * Gemini (`/v1beta/openai/`) menolak `content: null` pada giliran
+ * assistant+tool_calls dengan 400 "Request contains an invalid argument".
+ * Itulah akar 400 pada alur satu-tool: request pertama (tanpa tool turn)
+ * lolos, request kedua (assistant null + tool result) ditolak.
+ */
+export interface ProviderWireMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string }; extra_content?: unknown }[];
+  tool_call_id?: string;
+}
+
+/**
+ * Normalisasi pesan internal → payload provider yang valid lintas
+ * Gemini native-via-OpenAI-compat, OpenAI-compatible, dan OpenRouter:
+ *  - system non-pertama → user berprefix (Gemini hanya menerima satu
+ *    system instruction di awal; system di tengah percakapan → 400).
+ *  - assistant+tool_calls dengan content null/kosong → "" (Gemini menolak null).
+ *  - extra_content hanya diteruskan ke Gemini (field non-standar; provider
+ *    ketat lain menolak field tak dikenal dengan 400).
+ *  - tool tanpa tool_call_id / content non-string diperbaiki atau ditolak
+ *    sebelum request dikirim (hemat kuota: tanpa.compose doomed request).
+ *
+ * Melempar AppError VALIDATION_FAILED bila pasangan assistant(tool_calls)
+ * ↔ tool result rusak — tanpa menyentuh kuota provider.
+ */
+export function buildProviderMessages(
+  messages: ChatMessage[],
+  providerKind: string,
+): ProviderWireMessage[] {
+  const declared = new Map<string, number>(); // tool_call id → index pesan assistant
+  const answered = new Map<string, number>(); // tool_call id → index pesan tool
+  const out: ProviderWireMessage[] = [];
+  let seenFirstSystem = false;
+
+  messages.forEach((m, idx) => {
+    if (m.role === "system" && seenFirstSystem) {
+      out.push({ role: "user", content: `[Catatan sistem] ${m.content ?? ""}` });
+      return;
+    }
+    if (m.role === "system") {
+      seenFirstSystem = true;
+      out.push({ role: "system", content: m.content ?? "" });
+      return;
+    }
+    if (m.role === "tool") {
+      const id = (m.toolCallId ?? "").trim();
+      if (!id) {
+        throw new AppError("VALIDATION_FAILED", `Payload tool rusak (pesan ${idx}): tool_call_id kosong — request dibatalkan sebelum menghabiskan kuota.`, 422);
+      }
+      if (answered.has(id)) {
+        throw new AppError("VALIDATION_FAILED", `Payload tool rusak: tool_call_id "${id}" dijawab dua kali — request dibatalkan sebelum menghabiskan kuota.`, 422);
+      }
+      answered.set(id, idx);
+      out.push({ role: "tool", content: m.content ?? "", tool_call_id: id });
+      return;
+    }
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      const calls: NonNullable<ProviderWireMessage["tool_calls"]> = m.toolCalls.map((tc) => {
+        if (!tc.id || !tc.name) {
+          throw new AppError("VALIDATION_FAILED", `Payload tool rusak (pesan ${idx}): tool call tanpa id/nama — request dibatalkan sebelum menghabiskan kuota.`, 422);
+        }
+        if (declared.has(tc.id)) {
+          throw new AppError("VALIDATION_FAILED", `Payload tool rusak: tool_call_id "${tc.id}" dideklarasikan dua kali — request dibatalkan sebelum menghabiskan kuota.`, 422);
+        }
+        declared.set(tc.id, idx);
+        return {
+          id: tc.id,
+          type: "function" as const,
+          function: { name: tc.name, arguments: tc.argumentsJson || "{}" },
+          // `extra_content` (mis. thought signature Gemini thinking) hanya
+          // diteruskan ke Gemini; provider ketat lain menolak field tak dikenal (400).
+          ...(providerKind === "gemini" && tc.extraContent !== undefined ? { extra_content: tc.extraContent } : {}),
+        };
+      });
+      out.push({ role: "assistant", content: m.content ?? "", tool_calls: calls });
+      return;
+    }
+    out.push({ role: m.role as "user" | "assistant", content: m.content ?? "" });
+  });
+
+  // Setiap tool_calls wajib dijawab tepat satu tool message, dan sebaliknya.
+  for (const [id] of declared) {
+    if (!answered.has(id)) {
+      throw new AppError("VALIDATION_FAILED", `Payload tool rusak: tool_call_id "${id}" tanpa hasil tool — request dibatalkan sebelum menghabiskan kuota.`, 422);
+    }
+  }
+  for (const [id] of answered) {
+    if (!declared.has(id)) {
+      throw new AppError("VALIDATION_FAILED", `Payload tool rusak: hasil tool "${id}" tanpa pemanggil — request dibatalkan sebelum menghabiskan kuota.`, 422);
+    }
+  }
+  return out;
+}
+
+/** Pastikan definisi tool berupa function-object valid; default schema kosong yang aman. */
+export function buildProviderTools(tools: ChatToolDefinition[]): ChatToolDefinition[] {
+  return tools.map((t) => ({
+    type: "function" as const,
+    function: {
+      name: t.function.name,
+      description: t.function.description,
+      parameters:
+        t.function.parameters && typeof t.function.parameters === "object"
+          ? (t.function.parameters as Record<string, unknown>)
+          : { type: "object", properties: {} },
+    },
+  }));
+}
+
+/** Ringkasan diagnostik aman (tanpa isi pesan, tanpa kunci) untuk log per-request. */
+export function describeProviderRequest(input: {
+  messages: ChatMessage[];
+  tools: ChatToolDefinition[];
+  maxTokens: number;
+}): { messageCount: number; toolCount: number; payloadChars: number; estimatedTokens: number } {
+  let payloadChars = 0;
+  for (const m of input.messages) payloadChars += (m.content ?? "").length + (m.toolCalls?.reduce((n, tc) => n + tc.id.length + tc.name.length + tc.argumentsJson.length, 0) ?? 0);
+  try {
+    payloadChars += JSON.stringify(input.tools).length;
+  } catch {
+    payloadChars += 2000;
+  }
+  const estimatedTokens = estimateRequestTokens({
+    messages: input.messages.map((m) => ({ content: m.content })),
+    tools: input.tools,
+    maxTokens: input.maxTokens,
+  });
+  return { messageCount: input.messages.length, toolCount: input.tools.length, payloadChars, estimatedTokens };
 }
 
 export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger: Logger, opts: RateLimitedClientOptions = {}): ChatClient {
@@ -189,6 +330,32 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
         tools: input.tools,
         maxTokens: input.maxTokens,
       });
+      // Diagnostik aman per upaya request (tanpa isi pesan / kunci).
+      const diag = describeProviderRequest({ messages: input.messages, tools: input.tools, maxTokens: input.maxTokens });
+      const endpointHost = (() => {
+        try {
+          return new URL(normalizedBaseUrl).host;
+        } catch {
+          return "[invalid-base-url]";
+        }
+      })();
+
+      // Validasi pairing tool SEBELUM antrean/kuota: payload rusak tidak
+      // boleh menghabiskan kuota atau menimbulkan 400 provider.
+      let wireMessages: ProviderWireMessage[];
+      try {
+        wireMessages = buildProviderMessages(input.messages, cfg.kind);
+      } catch (err) {
+        logger.warn("provider request blocked locally: invalid tool payload", {
+          provider: cfg.kind,
+          model: cfg.model,
+          endpoint: endpointHost,
+          ...diag,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+      const wireTools = buildProviderTools(input.tools);
 
       let attempt = 0;
       for (;;) {
@@ -208,7 +375,7 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
           const e = err as Error & { code?: string; retryAt?: string };
           if (e?.code === "QUOTA_EXHAUSTED" || e?.code === "RATE_LIMITED" || e?.code === "CANCELLED") {
             throw new AppError(
-              e.code === "CANCELLED" ? "UPSTREAM_TIMEOUT" : "UPSTREAM_ERROR",
+              e.code === "CANCELLED" ? "UPSTREAM_TIMEOUT" : e.code === "QUOTA_EXHAUSTED" ? "UPSTREAM_QUOTA_EXHAUSTED" : "UPSTREAM_RATE_LIMITED",
               e.message,
               e.code === "CANCELLED" ? 504 : 502,
             );
@@ -221,27 +388,18 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
         let failed = false;
         try {
           try {
+            input.onRequestAttempt?.();
+            logger.debug("provider request attempt", {
+              provider: cfg.kind,
+              model: cfg.model,
+              endpoint: endpointHost,
+              attempt: attempt + 1,
+              ...diag,
+            });
             stream = await client.chat.completions.create({
               model: cfg.model,
-              messages: input.messages.map((m) => {
-                if (m.role === "tool") {
-                  return { role: "tool" as const, content: m.content ?? "", tool_call_id: m.toolCallId ?? "" };
-                }
-                if (m.role === "assistant" && m.toolCalls?.length) {
-                  return {
-                    role: "assistant" as const,
-                    content: m.content ?? null,
-                    tool_calls: m.toolCalls.map((tc) => ({
-                      id: tc.id,
-                      type: "function" as const,
-                      function: { name: tc.name, arguments: tc.argumentsJson },
-                      ...(tc.extraContent ? { extra_content: tc.extraContent } : {}),
-                    })),
-                  };
-                }
-                return { role: m.role as "system" | "user" | "assistant", content: m.content ?? "" };
-              }),
-              tools: input.tools.length ? input.tools : undefined,
+              messages: wireMessages as never,
+              tools: wireTools.length ? wireTools : undefined,
               max_tokens: input.maxTokens,
               stream: true,
               stream_options: { include_usage: true },
@@ -263,7 +421,13 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
             logger.warn("provider stream request failed", {
               provider: cfg.kind,
               model: cfg.model,
-              error: err instanceof Error ? err.message : String(err),
+              endpoint: endpointHost,
+              attempt: attempt + 1,
+              ...diag,
+              code: mapped.error.code,
+              retryable: false,
+              requestId: extractRequestId(err),
+              error: redactText(mapped.error.message).slice(0, 300),
             });
             throw mapped.error;
           }
@@ -405,8 +569,30 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
         return { retry: false, daily: false, waitMs: 0, error: toProviderError(err, cfg) };
       }
 
-      function extractRetryMs(err: unknown): number | null {
-        const e = err as { headers?: Headers | Record<string, string>; status?: number; message?: string; error?: { message?: string } } | null;
+      function extractRequestId(err: unknown): string | null {
+        const e = err as {
+          headers?: Headers | Record<string, string>;
+          requestID?: string;
+          error?: { requestID?: string };
+        } | null;
+        try {
+          if (typeof e?.requestID === "string" && e.requestID) return e.requestID.slice(0, 64);
+          if (typeof e?.error?.requestID === "string" && e.error.requestID) return e.error.requestID.slice(0, 64);
+          const h = e?.headers;
+          if (h instanceof Headers) {
+            const v = h.get("x-request-id") ?? h.get("request-id");
+            return v ? v.slice(0, 64) : null;
+          }
+          if (h && typeof h === "object") {
+            const lower = Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), String(v)]));
+            const v = lower["x-request-id"] ?? lower["request-id"];
+            return v ? String(v).slice(0, 64) : null;
+          }
+        } catch { /* abaikan */ }
+        return null;
+      }
+
+      function extractRetryMs(err: unknown): number | null {        const e = err as { headers?: Headers | Record<string, string>; status?: number; message?: string; error?: { message?: string } } | null;
         const now = Date.now();
         // Header Retry-After bila SDK menyertakannya
         try {

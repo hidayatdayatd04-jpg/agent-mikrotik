@@ -159,8 +159,42 @@ export async function readConnectionStatus(
   };
 }
 
-export function createAgentLoop(deps: AgentRunDeps) {
-  const activeRuns = new Map<string, { cancelled: boolean; controller: AbortController }>();
+/**
+ * Batas tool per request agar payload tidak membengkak. Di bawah batas,
+ * SELURUH katalog dikirim (tanpa pengurangan kemampuan). Di atas batas,
+ * connection probe + docs selalu dipertahankan, sisanya dirangking oleh
+ * relevansi kata kunci terhadap pesan pengguna.
+ */
+export const MAX_PROVIDER_TOOLS = 48;
+
+export function selectRelevantTools(catalog: NormalizedTool[], userText: string): NormalizedTool[] {
+  if (catalog.length <= MAX_PROVIDER_TOOLS) return catalog;
+  const keywords = new Set(
+    userText
+      .toLowerCase()
+      .split(/[^a-z0-9_]+/i)
+      .map((w) => w.trim())
+      .filter((w) => w.length >= 3),
+  );
+  const score = (t: NormalizedTool): number => {
+    if (t.fqName === CONNECTION_CHECK_FQ) return 1_000_000;
+    if (t.fqName.startsWith("docs:")) return 500_000;
+    const hay = `${t.fqName} ${t.description} ${(t.capabilities ?? []).join(" ")}`.toLowerCase();
+    let s = 0;
+    for (const kw of keywords) {
+      if (hay.includes(kw)) s += kw.length >= 5 ? 2 : 1;
+    }
+    return s;
+  };
+  return [...catalog]
+    .map((t, i) => ({ t, s: score(t), i }))
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .slice(0, MAX_PROVIDER_TOOLS)
+    .sort((a, b) => a.i - b.i)
+    .map((e) => e.t);
+}
+
+export function createAgentLoop(deps: AgentRunDeps) {  const activeRuns = new Map<string, { cancelled: boolean; controller: AbortController }>();
 
   function isCancelled(runId: string) {
     return activeRuns.get(runId)?.cancelled ?? false;
@@ -176,13 +210,16 @@ export function createAgentLoop(deps: AgentRunDeps) {
       type: "function" as const,
       function: {
         name: t.fqName.replace(/[^A-Za-z0-9_-]/g, "_"),
-        description: t.description.slice(0, 1024),
+        // Deskripsi dipangkas: hemat ~70% token skema tanpa menghilangkan makna.
+        description: t.description.slice(0, 300),
         parameters: (t.inputSchema && typeof t.inputSchema === "object"
           ? (t.inputSchema as Record<string, unknown>)
           : { type: "object", properties: {} }),
       },
     }));
   }
+
+  /** Execute one dispatched tool with redaction + persistence. Returns SSE events. */
 
   /** Execute one dispatched tool with redaction + persistence. Returns SSE events. */
   async function runTool(
@@ -193,7 +230,7 @@ export function createAgentLoop(deps: AgentRunDeps) {
     catalog: NormalizedTool[],
     emit: (e: Omit<RunEvent, "seq" | "runId">) => Promise<void>,
     toolIndex: number,
-  ): Promise<{ role: "tool"; content: string; toolCallId: string }> {
+  ): Promise<{ role: "tool"; content: string; toolCallId: string; note: string }> {
     const started = Date.now();
     await emit({ type: "tool.started", payload: { callId: call.id, name: fqName, index: toolIndex } });
     // Backend-owned probe: answered from live server rows, no dispatcher needed
@@ -236,6 +273,7 @@ export function createAgentLoop(deps: AgentRunDeps) {
         role: "tool",
         content: JSON.stringify({ ok: true, connection: live, guidance }),
         toolCallId: call.id,
+        note: human,
       };
     }
     let decision: Awaited<ReturnType<PolicyDispatcher["check"]>>;
@@ -270,6 +308,7 @@ export function createAgentLoop(deps: AgentRunDeps) {
         role: "tool",
         content: JSON.stringify({ error: code, message }),
         toolCallId: call.id,
+        note: `Tool ${fqName} ditolak (${code}): ${message}`.slice(0, 500),
       };
     }
     if (!decision.allowed) {
@@ -292,6 +331,7 @@ export function createAgentLoop(deps: AgentRunDeps) {
         role: "tool",
         content: JSON.stringify({ ok: false, error: decision.code, message: decision.message, guidance }),
         toolCallId: call.id,
+        note: `Tool ${fqName} ditolak (${decision.code}): ${decision.message}`.slice(0, 500),
       };
     }
     let result: { ok: boolean; output: string; errorCode?: string };
@@ -330,12 +370,14 @@ export function createAgentLoop(deps: AgentRunDeps) {
         role: "tool",
         content: JSON.stringify({ ok: false, error: result.errorCode ?? "TOOL_FAILED", output: redacted, guidance }),
         toolCallId: call.id,
+        note: `Tool ${fqName} gagal (${result.errorCode ?? "TOOL_FAILED"}): ${redacted.slice(0, 400)}`,
       };
     }
     return {
       role: "tool",
       content: JSON.stringify({ ok: true, output: redacted }),
       toolCallId: call.id,
+      note: `Tool ${fqName} berhasil: ${redacted.slice(0, 400)}`,
     };
   }
 
@@ -367,9 +409,21 @@ export function createAgentLoop(deps: AgentRunDeps) {
     let failCode: string | null = null;
     let failMessage: string | null = null;
     let assistantText = "";
-    let usage: { promptTokens: number; completionTokens: number } | null = null;
+    // Token diakumulasi lintas turn (provider hanya melaporkan per-request).
+    let promptTokensTotal = 0;
+    let completionTokensTotal = 0;
+    let aiRequests = 0;
     let toolCallsTotal = 0;
-    const usageRecord = () => ({ ...usage, modelLabel: input.client.modelLabel, ...(usage ? { source: "provider" } : {}), toolCalls: toolCallsTotal });
+    // Ringkasan hasil tool per run — dipertahankan bila respons AI lanjutan gagal.
+    const toolResultNotes: string[] = [];
+    const usageRecord = () => ({
+      promptTokens: promptTokensTotal,
+      completionTokens: completionTokensTotal,
+      aiRequests,
+      toolCalls: toolCallsTotal,
+      modelLabel: input.client.modelLabel,
+      source: promptTokensTotal + completionTokensTotal > 0 ? "provider" : "local",
+    });
     try {
       const [saved] = await deps.db.select({ cancelRequested: agentRuns.cancelRequested }).from(agentRuns).where(eq(agentRuns.id, input.runId));
       if (saved?.cancelRequested) cancel(input.runId);
@@ -409,7 +463,10 @@ export function createAgentLoop(deps: AgentRunDeps) {
         }
         if (m.role === "user") {
           const content = m.content as { text?: string; context?: string };
-          chatHistory.push({ role: "user", content: String(content?.text ?? "") + (content?.context ?? "") });
+          // Batas per-pesan agar lampiran/dump besar tidak meledakkan konteks
+          // setiap turn (lampiran penuh tetap tersimpan di storage).
+          const combined = String(content?.text ?? "") + (content?.context ?? "");
+          chatHistory.push({ role: "user", content: combined.slice(0, 12_000) });
         } else if (m.role === "assistant") {
           const text = String((m.content as { text?: string })?.text ?? "").trim();
           if (text) {
@@ -432,8 +489,11 @@ export function createAgentLoop(deps: AgentRunDeps) {
       const catalog = input.connectionId
         ? fullCatalog
         : fullCatalog.filter((t) => t.fqName.startsWith("docs:") || t.fqName === CONNECTION_CHECK_FQ);
-      const providerTools = toProviderTools(catalog);
+      const providerTools = toProviderTools(selectRelevantTools(catalog, input.userText));
       const toolCallCount = new Map<string, number>(); // dedup tool call ids
+      // Guard anti-loop: tool sama + argumen identik yang diulang tanpa
+      // kemajuan → pakai cache / hentikan run (hemat kuota + eksekusi).
+      const identicalCalls = new Map<string, { count: number; content: string; note: string }>();
 
       for (let step = 0; step < deps.limits.maxSteps; step++) {
         if (isCancelled(input.runId)) {
@@ -453,6 +513,9 @@ export function createAgentLoop(deps: AgentRunDeps) {
           tools: providerTools,
           maxTokens: deps.limits.maxTokens,
           signal: entry.controller.signal,
+          onRequestAttempt: () => {
+            aiRequests += 1;
+          },
         })) {
           entry.controller.signal.throwIfAborted();
           if (ev.type === "text" && ev.text) {
@@ -466,7 +529,8 @@ export function createAgentLoop(deps: AgentRunDeps) {
           } else if (ev.type === "tool_calls" && ev.toolCalls) {
             stepToolCalls = greetingOnly ? [] : ev.toolCalls;
           } else if (ev.type === "usage" && ev.usage) {
-            usage = ev.usage;
+            promptTokensTotal += Math.max(0, ev.usage.promptTokens || 0);
+            completionTokensTotal += Math.max(0, ev.usage.completionTokens || 0);
             await deps.db.update(agentRuns).set({ usage: usageRecord() }).where(eq(agentRuns.id, input.runId));
           } else if (ev.type === "done") {
             break;
@@ -478,8 +542,10 @@ export function createAgentLoop(deps: AgentRunDeps) {
           chatHistory.push({ role: "assistant", content: stepText });
           break;
         }
-        // assistant turn with tool calls — persist pair and execute each
-        chatHistory.push({ role: "assistant", content: stepText || null, toolCalls: stepToolCalls });
+        // assistant turn with tool calls — persist pair and execute each.
+        // content "" (bukan null): endpoint OpenAI-compatible Gemini menolak
+        // content null pada giliran tool_calls dengan 400 invalid argument.
+        chatHistory.push({ role: "assistant", content: stepText, toolCalls: stepToolCalls });
         for (const [i, call] of stepToolCalls.entries()) {
           if (isCancelled(input.runId)) {
             finalStatus = "cancelled";
@@ -523,7 +589,35 @@ export function createAgentLoop(deps: AgentRunDeps) {
           }
           // map provider tool name back to fqName (dots replaced by _ in provider space)
           const fq = catalog.find((t) => t.fqName.replace(/[^A-Za-z0-9_-]/g, "_") === call.name)?.fqName ?? call.name;
-          const toolMsg = await runTool(input, call, fq, args, catalog, emitSeq, i);
+          // Guard anti-loop: (tool + argumen kanonis) identik yang ketiga
+          // kalinya tanpa kemajuan → hentikan run, jangan eksekusi ulang.
+          const loopKey = `${fq}\n${call.argumentsJson}`;
+          const seen = identicalCalls.get(loopKey);
+          if (seen && seen.count >= 2) {
+            finalStatus = "failed";
+            failCode = "TOOL_LOOP_DETECTED";
+            failMessage =
+              `Model meminta tool "${fq}" dengan argumen identik berulang kali tanpa kemajuan. ` +
+              `Hasil terakhir yang tersimpan: ${seen.note.slice(0, 400)}`;
+            chatHistory.push({
+              role: "tool",
+              content: JSON.stringify({ error: "TOOL_LOOP_DETECTED", message: failMessage }),
+              toolCallId: call.id,
+            });
+            break;
+          }
+          let toolMsg: Awaited<ReturnType<typeof runTool>>;
+          if (seen && fq !== CONNECTION_CHECK_FQ) {
+            // Pengulangan identik ke-2: pakai hasil cache, tanpa eksekusi ulang.
+            seen.count += 1;
+            await emitSeq({ type: "tool.started", payload: { callId: call.id, name: fq, index: i, cached: true } });
+            await emitSeq({ type: "tool.completed", payload: { callId: call.id, name: fq, summary: seen.note, durationMs: 0, index: i, cached: true } });
+            toolMsg = { role: "tool", content: seen.content, toolCallId: call.id, note: seen.note };
+          } else {
+            toolMsg = await runTool(input, call, fq, args, catalog, emitSeq, i);
+            identicalCalls.set(loopKey, { count: (seen?.count ?? 0) + 1, content: toolMsg.content, note: toolMsg.note });
+          }
+          toolResultNotes.push(`[${fq}] ${toolMsg.note}`.slice(0, 500));
           chatHistory.push(toolMsg);
           // transaction-aware tool calls recorded against the active tx
           if (input.policy.mode === "write") {
@@ -548,9 +642,12 @@ export function createAgentLoop(deps: AgentRunDeps) {
                 });
               } catch (err) {
                 if (err instanceof AppError) {
+                  // Catatan mid-conversation sebagai user (bukan system):
+                  // endpoint OpenAI-compatible Gemini hanya menerima satu
+                  // system message di awal; system di tengah → 400.
                   chatHistory.push({
-                    role: "system",
-                    content: `Batas aksi transaksi tercapai: ${err.message}`,
+                    role: "user",
+                    content: `[Batas transaksi] Batas aksi transaksi tercapai: ${err.message}`,
                   });
                 }
               }
@@ -582,7 +679,7 @@ export function createAgentLoop(deps: AgentRunDeps) {
         })
         .where(eq(agentRuns.id, input.runId));
       if (finalStatus === "completed") {
-        await emitSeq({ type: "run.completed", payload: { usage: usage ?? null } });
+        await emitSeq({ type: "run.completed", payload: { usage: usageRecord() } });
       } else if (finalStatus === "cancelled") {
         await emitSeq({ type: "run.cancelled", payload: { reason: "dibatalkan pengguna" } });
       } else {
@@ -619,7 +716,13 @@ export function createAgentLoop(deps: AgentRunDeps) {
           .from(messages)
           .where(eq(messages.conversationId, input.conversationId));
         const maxSeq = all.reduce((m, r) => Math.max(m, r.seq), 0);
-        const userFacingError = `Jawaban belum dapat diselesaikan (${failCode}).\n\n${failMessage ?? "Terjadi kesalahan pada provider AI."}`;
+        // Bila tool sempat berhasil tetapi respons AI lanjutan gagal (mis. 400
+        // setelah tool), pertahankan hasil tool yang aman alih-alih hanya error.
+        const preserved =
+          toolCallsTotal > 0 && toolResultNotes.length > 0
+            ? `\n\nHasil tool yang berhasil disimpan:\n${toolResultNotes.slice(-3).map((n) => `- ${redactText(n).slice(0, 400)}`).join("\n")}`
+            : "";
+        const userFacingError = `Jawaban belum dapat diselesaikan (${failCode}).\n\n${failMessage ?? "Terjadi kesalahan pada provider AI."}${preserved}`;
         const errorText = (assistantText ? "\n\n" : "") + userFacingError;
         timeline.push({ runId: input.runId, seq: ++seqCounter, type: "message.delta", payload: { text: errorText } });
         await deps.db.insert(messages).values({

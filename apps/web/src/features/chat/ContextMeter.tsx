@@ -12,6 +12,8 @@ interface ModelContext {
 interface Usage {
   promptTokens?: number;
   completionTokens?: number;
+  aiRequests?: number;
+  toolCalls?: number;
   modelLabel?: string;
   source?: string;
 }
@@ -52,7 +54,8 @@ export function ContextMeter({ conversationId, running }: { conversationId?: str
       <DropdownMenuContent align="end" side="top" sideOffset={12} className="w-72 p-4 text-xs">
         <p className="mb-3 break-all font-medium">{model?.model ?? provider.data?.model ?? "Provider belum diatur"}</p>
         <div className="space-y-2 text-muted-foreground">
-          <p className="flex justify-between gap-3"><span>Kapasitas {model?.contextBasis === "input" ? "input" : "konteks"}</span><span className="font-mono text-foreground">{capacity ? `${number.format(capacity)} token` : "Belum tersedia"}</span></p>
+          <p className="flex justify-between gap-3"><span>Request AI (run terakhir)</span><span className="font-mono text-foreground">{typeof usage?.aiRequests === "number" ? number.format(usage.aiRequests) : "—"}</span></p>
+          <p className="flex justify-between gap-3"><span>Tool dipanggil</span><span className="font-mono text-foreground">{typeof usage?.toolCalls === "number" ? number.format(usage.toolCalls) : "—"}</span></p>          <p className="flex justify-between gap-3"><span>Kapasitas {model?.contextBasis === "input" ? "input" : "konteks"}</span><span className="font-mono text-foreground">{capacity ? `${number.format(capacity)} token` : "Belum tersedia"}</span></p>
           <p className="flex justify-between gap-3"><span>Input terakhir</span><span className="font-mono text-foreground">{measured ? number.format(usage.promptTokens!) : "—"}</span></p>
           <p className="flex justify-between gap-3"><span>Output terakhir</span><span className="font-mono text-foreground">{measured && typeof usage.completionTokens === "number" ? number.format(usage.completionTokens) : "—"}</span></p>
           <p className="border-t border-border pt-3 leading-relaxed">{measured ? "Hitungan asli dari provider untuk permintaan terakhir, termasuk instruksi dan tool. Diperbarui saat provider melaporkan usage." : "Pemakaian belum dilaporkan provider. Angka tidak diperkirakan dari panjang teks."}</p>

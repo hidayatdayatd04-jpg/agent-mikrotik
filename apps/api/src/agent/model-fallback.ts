@@ -139,6 +139,12 @@ export function describeStreamFailure(status: number, message: string): {
   kind: "daily_quota" | "rate_limit" | "other";
   shouldFallback: boolean;
 } {
+  // 400 invalid-argument TIDAK PERNAH fallback: payload yang sama akan
+  // ditolak semua model — fallback hanya membakar kuota. (Cek dulu karena
+  // pesan 400 menyebut kata "kuota" pada himbauan hemat-kuota.)
+  if (status === 400 || /\(400\)|invalid[ _-]?argument|argumen tidak valid|UPSTREAM_INVALID_REQUEST/i.test(message)) {
+    return { kind: "other", shouldFallback: false };
+  }
   if (isDailyQuotaError(status, message)) return { kind: "daily_quota", shouldFallback: true };
   const c = classifyQuotaError(status, message);
   if (c.kind === "rate_limit" || status === 429) return { kind: "rate_limit", shouldFallback: true };
@@ -283,6 +289,7 @@ export function createFallbackChatClient(
 }
 
 function guessStatus(message: string): number {
+  if (/\(400\)|invalid[ _-]?argument|argumen tidak valid/i.test(message)) return 400;
   if (/429|rate limit|kuota/i.test(message)) return 429;
   if (/kuota harian|daily|RPD/i.test(message)) return 429;
   return 0;
