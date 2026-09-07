@@ -106,7 +106,7 @@ describe("policy catalog (live MCP children)", () => {
 
     const snapshot = { userId: "u1", connectionId: "c1", mode: "read-only" as const, modeVersion: 1, transactionState: "none" as const };
     const r = await dispatcher.check({
-      session: { userId: "u1" },
+      workspace: { userId: "u1" },
       snapshot,
       // the LLM "forces" the raw-CLI escape hatch even though it was never offered
       toolFqName: "mt:run_routeros_command",

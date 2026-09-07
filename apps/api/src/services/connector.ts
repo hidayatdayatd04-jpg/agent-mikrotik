@@ -214,7 +214,7 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
   }
 
   function openExisting(userId: string, row: typeof routerConnections.$inferSelect): string {
-    if (!row.passwordCiphertext || !row.passwordNonce || !row.passwordAuthTag) {
+    if (row.passwordCiphertext === null || !row.passwordNonce || !row.passwordAuthTag) {
       throw new AppError("INTERNAL_ERROR", "Kredensial tersimpan tidak lengkap.", 500);
     }
     const sealed: SealedSecret = {
@@ -305,7 +305,15 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
     mode: RouterMode,
     expectedVersion: number,
   ): Promise<{ connector: ConnectorDTO; version: number }> {
-    await requireOwned(userId, connectionId)();
+    const current = await requireOwned(userId, connectionId)();
+    if (mode === "write") {
+      if (current.status !== "connected") {
+        throw new AppError("CONFLICT", "Sambungkan router dan pastikan terverifikasi sebelum mengaktifkan mode Write.", 409);
+      }
+      if (!current.routerIdentity) {
+        throw new AppError("CONFLICT", "Identitas router belum terverifikasi; sambungkan ulang connector lalu aktifkan Write.", 409);
+      }
+    }
     // compare-and-set on version
     const updated = await db
       .update(connectionPermissions)

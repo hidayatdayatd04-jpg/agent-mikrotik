@@ -60,6 +60,11 @@ export interface TransactionCoordinatorDeps {
   logger: Logger;
   /** opens (or reuses) the safe-mode session bound to one child SSH connection */
   openSession(ctx: TransactionContext): Promise<SafeModeSession>;
+  /**
+   * Preferred opener: enable + prove liveness, recycling a wedged child once.
+   * When absent, begin falls back to openSession + enable (legacy behavior).
+   */
+  openVerifiedSession?(ctx: TransactionContext): Promise<SafeModeSession>;
   /** read-only checks executed before commit; must not contain secrets */
   verifyChecks(ctx: TransactionContext): Promise<{ ok: boolean; detail: string }>;
   /** hard cap on RouterOS actions per transaction (not just tool calls) */
@@ -135,8 +140,10 @@ export class TransactionCoordinator {
       );
     }
     // an unreconciled unknown tx means the safe-mode window state is unknown:
-    // refuse new transactions on this router until reconciliation closes the books
-    const [unknownTx] = await this.deps.db
+    // refuse new transactions on this router until reconciliation closes the books.
+    // Best effort first: reconcile resolvable unknowns (live session in this
+    // process) so a stale row doesn't block the router forever.
+    let unknowns = await this.deps.db
       .select()
       .from(changeTransactions)
       .where(
@@ -145,8 +152,27 @@ export class TransactionCoordinator {
           eq(changeTransactions.state, "unknown"),
         ),
       )
-      .limit(1);
-    if (unknownTx) {
+      .limit(5);
+    for (const tx of unknowns) {
+      try {
+        await this.reconcile(tx.id);
+      } catch (err) {
+        this.deps.logger.warn("auto-reconcile before begin failed", { transactionId: tx.id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    if (unknowns.length > 0) {
+      unknowns = await this.deps.db
+        .select()
+        .from(changeTransactions)
+        .where(
+          and(
+            eq(changeTransactions.routerIdentity, input.routerIdentity),
+            eq(changeTransactions.state, "unknown"),
+          ),
+        )
+        .limit(1);
+    }
+    if (unknowns.length > 0) {
       throw new AppError(
         "SAFE_MODE_UNAVAILABLE",
         "Terdapat transaksi dengan status tidak diketahui pada router ini. Sambungkan ulang router atau jalankan reconciliasi sebelum memulai transaksi baru.",
@@ -170,11 +196,23 @@ export class TransactionCoordinator {
     try {
       // persist identity + phase BEFORE the external enable call
       await this.transition(row!.id, "active", { phase: "enabling safe mode" });
-      const session = await this.deps.openSession({
-        userId: input.userId,
-        connectionId: input.connectionId,
-        routerIdentity: input.routerIdentity,
-      });
+      let session: SafeModeSession;
+      if (this.deps.openVerifiedSession) {
+        // enable + prove the window is live (self-heals a wedged child once)
+        session = await this.deps.openVerifiedSession({
+          userId: input.userId,
+          connectionId: input.connectionId,
+          routerIdentity: input.routerIdentity,
+        });
+      } else {
+        session = await this.deps.openSession({
+          userId: input.userId,
+          connectionId: input.connectionId,
+          routerIdentity: input.routerIdentity,
+        });
+        // openSession only binds the child — the window must be enabled explicitly
+        await session.enable();
+      }
       const st = await session.status();
       if (st !== "active") {
         this.release(input.routerIdentity, row!.id);
@@ -190,6 +228,23 @@ export class TransactionCoordinator {
       });
       return { transactionId: row!.id };
     } catch (err) {
+      // A failed begin must not leave a live ("active") orphan row blocking
+      // the router: an explicit enable refusal means no window was opened
+      // (close as rolled_back), anything else leaves the window state in
+      // doubt (unknown). Bookkeeping never masks the original error.
+      try {
+        const current = await this.require(row!.id);
+        if (current.state === "active") {
+          if (err instanceof AppError) {
+            await this.transition(row!.id, "rolling_back", { reason: err.message });
+            await this.transition(row!.id, "rolled_back", { reason: err.message });
+          } else {
+            await this.transition(row!.id, "unknown", { reason: err instanceof Error ? err.message : String(err) });
+          }
+        }
+      } catch {
+        /* ignore bookkeeping errors */
+      }
       this.release(input.routerIdentity, row!.id);
       throw err;
     }

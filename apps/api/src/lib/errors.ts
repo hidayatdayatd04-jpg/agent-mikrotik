@@ -14,10 +14,7 @@ export class AppError extends Error {
 }
 
 export const StatusCodeByCode = {
-  AUTH_REQUIRED: 401,
-  OTP_INVALID: 400,
-  OTP_EXPIRED: 400,
-  OTP_CONSUMED: 400,
+  UNAUTHORIZED: 401,
   RATE_LIMITED: 429,
   VALIDATION_FAILED: 422,
   NOT_FOUND: 404,

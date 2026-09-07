@@ -3,8 +3,6 @@ import {
   createDecipheriv,
   createHash,
   randomBytes,
-  timingSafeEqual,
-  createHmac,
 } from "node:crypto";
 
 export interface SealedSecret {
@@ -71,22 +69,6 @@ export function openSecret(
   } catch {
     return null;
   }
-}
-
-/** HMAC digest with a dedicated secret; used for OTP digests and token hashes. */
-export function hmacDigest(secret: string, ...parts: string[]): string {
-  return createHmac("sha256", secret).update(parts.join("|")).digest("hex");
-}
-
-export function sha256Hex(input: string): string {
-  return createHash("sha256").update(input).digest("hex");
-}
-
-export function constantTimeEquals(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
 }
 
 export function envKeyRing(

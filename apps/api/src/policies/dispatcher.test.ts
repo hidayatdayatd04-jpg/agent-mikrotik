@@ -136,20 +136,20 @@ describe("dispatcher re-checks", () => {
 
   test("read tool allowed on read-only", async () => {
     const d = makeDispatcher({ getMode: async () => live }, catalog);
-    const r = await d.check({ session: { userId: "u1" }, snapshot, toolFqName: "mt:list_addresses", args: {} });
+    const r = await d.check({ workspace: { userId: "u1" }, snapshot, toolFqName: "mt:list_addresses", args: {} });
     expect(r.allowed).toBe(true);
   });
 
   test("mutation tool never reaches LLM nor executes on read-only — forced call rejected", async () => {
     const d = makeDispatcher({ getMode: async () => live }, catalog);
-    const r = await d.check({ session: { userId: "u1" }, snapshot, toolFqName: "mt:add_address", args: {} });
+    const r = await d.check({ workspace: { userId: "u1" }, snapshot, toolFqName: "mt:add_address", args: {} });
     expect(r.allowed).toBe(false);
     if (!r.allowed) expect(r.code).toBe("TOOL_UNSUPPORTED");
   });
 
   test("unknown-classified tool rejected in both modes", async () => {
     const d = makeDispatcher({ getMode: async () => ({ mode: "write", version: 3 }) }, catalog);
-    const r = await d.check({ session: { userId: "u1" }, snapshot: { ...snapshot, mode: "write" }, toolFqName: "mt:mystery_tool", args: {} });
+    const r = await d.check({ workspace: { userId: "u1" }, snapshot: { ...snapshot, mode: "write" }, toolFqName: "mt:mystery_tool", args: {} });
     expect(r.allowed).toBe(false);
     if (!r.allowed) expect(r.code).toBe("TOOL_UNSUPPORTED");
   });
@@ -161,7 +161,7 @@ describe("dispatcher re-checks", () => {
       catalog,
     );
     const r = await d.check({
-      session: { userId: "u1" },
+      workspace: { userId: "u1" },
       snapshot: { ...snapshot, mode: "write" },
       toolFqName: "mt:add_address",
       args: {},
@@ -175,7 +175,7 @@ describe("dispatcher re-checks", () => {
     // even then the inner target must be read
     const d = makeDispatcher({ getMode: async () => live }, catalog);
     // find_tools is read; use its namespace trick: gateway denied because gateway not in RO catalog
-    const r = await d.check({ session: { userId: "u1" }, snapshot, toolFqName: "mt:invoke_tool", args: { name: "mt:list_addresses" } });
+    const r = await d.check({ workspace: { userId: "u1" }, snapshot, toolFqName: "mt:invoke_tool", args: { name: "mt:list_addresses" } });
     expect(r.allowed).toBe(false); // invoke_tool itself is not in the RO catalog
     if (!r.allowed) expect(r.code).toBe("TOOL_UNSUPPORTED");
 
@@ -183,23 +183,33 @@ describe("dispatcher re-checks", () => {
     // inner write tool is refused
     const permissive = catalog.map((t) => (t.fqName === "mt:invoke_tool" ? { ...t, risk: "read" as const } : t));
     const d2 = makeDispatcher({ getMode: async () => live }, permissive);
-    const r2 = await d2.check({ session: { userId: "u1" }, snapshot, toolFqName: "mt:invoke_tool", args: { name: "mt:add_address" } });
+    const r2 = await d2.check({ workspace: { userId: "u1" }, snapshot, toolFqName: "mt:invoke_tool", args: { name: "mt:add_address" } });
     expect(r2.allowed).toBe(false);
     if (!r2.allowed) expect(r2.code).toBe("WRITE_DISABLED");
   });
 
   test("A30: LLM cannot set host/credential/target args", async () => {
     const d = makeDispatcher({ getMode: async () => live }, catalog);
-    const r = await d.check({ session: { userId: "u1" }, snapshot, toolFqName: "mt:list_addresses", args: { host: "10.0.0.1" } });
+    const r = await d.check({ workspace: { userId: "u1" }, snapshot, toolFqName: "mt:list_addresses", args: { host: "10.0.0.1" } });
     expect(r.allowed).toBe(false);
     if (!r.allowed) expect(r.code).toBe("FORBIDDEN");
+    const r2 = await d.check({ workspace: { userId: "u1" }, snapshot, toolFqName: "mt:list_addresses", args: { password: "x" } });
+    expect(r2.allowed).toBe(false);
   });
 
-  test("session/owner mismatch rejected", async () => {
+  test("A30b: legitimate RouterOS rule params (address/port/ip) are NOT forbidden", async () => {
     const d = makeDispatcher({ getMode: async () => live }, catalog);
-    const noSession = await d.check({ session: null, snapshot, toolFqName: "mt:list_addresses", args: {} });
+    // list_addresses is a read tool; address-shaped filter args must pass the
+    // forbidden-arg gate (schema stub accepts everything here)
+    const r = await d.check({ workspace: { userId: "u1" }, snapshot, toolFqName: "mt:list_addresses", args: { address_filter: "192.168.1.20", port: "80", ip: "192.168.1.20" } });
+    expect(r.allowed).toBe(true);
+  });
+
+  test("workspace/owner mismatch rejected", async () => {
+    const d = makeDispatcher({ getMode: async () => live }, catalog);
+    const noSession = await d.check({ workspace: null, snapshot, toolFqName: "mt:list_addresses", args: {} });
     expect(noSession.allowed).toBe(false);
-    const wrongOwner = await d.check({ session: { userId: "someone-else" }, snapshot, toolFqName: "mt:list_addresses", args: {} });
+    const wrongOwner = await d.check({ workspace: { userId: "someone-else" }, snapshot, toolFqName: "mt:list_addresses", args: {} });
     expect(wrongOwner.allowed).toBe(false);
   });
 
@@ -219,10 +229,10 @@ describe("dispatcher re-checks", () => {
       },
     ];
     const d = makeDispatcher({ getMode: async () => live }, strict);
-    const bad = await d.check({ session: { userId: "u1" }, snapshot, toolFqName: "mt:strict_tool", args: {} });
+    const bad = await d.check({ workspace: { userId: "u1" }, snapshot, toolFqName: "mt:strict_tool", args: {} });
     expect(bad.allowed).toBe(false);
     if (!bad.allowed) expect(bad.code).toBe("VALIDATION_FAILED");
-    const good = await d.check({ session: { userId: "u1" }, snapshot, toolFqName: "mt:strict_tool", args: { query: "x" } });
+    const good = await d.check({ workspace: { userId: "u1" }, snapshot, toolFqName: "mt:strict_tool", args: { query: "x" } });
     expect(good.allowed).toBe(true);
   });
 
@@ -230,13 +240,25 @@ describe("dispatcher re-checks", () => {
     const liveWrite = { mode: "write" as const, version: 3 };
     const d = makeDispatcher({ getMode: async () => liveWrite }, catalog);
     const r = await d.check({
-      session: { userId: "u1" },
+      workspace: { userId: "u1" },
       snapshot: { ...snapshot, mode: "write" },
       toolFqName: "mt:add_address",
       args: {},
     });
     expect(r.allowed).toBe(false);
     if (!r.allowed) expect(r.code).toBe("SAFE_MODE_UNAVAILABLE");
+  });
+
+  test("write-mode mutation with active transaction + rule params is allowed", async () => {
+    const liveWrite = { mode: "write" as const, version: 3 };
+    const d = makeDispatcher({ getMode: async () => liveWrite }, catalog);
+    const r = await d.check({
+      workspace: { userId: "u1" },
+      snapshot: { ...snapshot, mode: "write", transactionState: "active" },
+      toolFqName: "mt:add_address",
+      args: { address: "192.168.1.20/32", interface: "ether1" },
+    });
+    expect(r.allowed).toBe(true);
   });
 
   test("safe-mode lifecycle tools are backend-only — model calls always denied", async () => {
@@ -258,15 +280,15 @@ describe("dispatcher re-checks", () => {
     const d = makeDispatcher({ getMode: async () => liveWrite }, safeModeCatalog);
     const snap = { ...snapshot, mode: "write" as const, transactionState: "active" as const };
     for (const tool of ["mt:enable_safe_mode", "mt:commit_safe_mode", "mt:rollback_safe_mode"]) {
-      const r = await d.check({ session: { userId: "u1" }, snapshot: snap, toolFqName: tool, args: {} });
+      const r = await d.check({ workspace: { userId: "u1" }, snapshot: snap, toolFqName: tool, args: {} });
       expect(r.allowed).toBe(false);
       if (!r.allowed) expect(r.code).toBe("SAFE_MODE_UNAVAILABLE");
     }
     // safe_mode_status remains a legitimate read probe for the model
-    const st = await d.check({ session: { userId: "u1" }, snapshot: snap, toolFqName: "mt:safe_mode_status", args: {} });
+    const st = await d.check({ workspace: { userId: "u1" }, snapshot: snap, toolFqName: "mt:safe_mode_status", args: {} });
     expect(st.allowed).toBe(true);
     // gateway cannot smuggle lifecycle tools in write mode either
-    const gw = await d.check({ session: { userId: "u1" }, snapshot: snap, toolFqName: "mt:invoke_tool", args: { name: "commit_safe_mode" } });
+    const gw = await d.check({ workspace: { userId: "u1" }, snapshot: snap, toolFqName: "mt:invoke_tool", args: { name: "commit_safe_mode" } });
     expect(gw.allowed).toBe(false);
     if (!gw.allowed) expect(gw.code).toBe("SAFE_MODE_UNAVAILABLE");
   });
@@ -274,7 +296,7 @@ describe("dispatcher re-checks", () => {
   test("audit records denials with codes", async () => {
     AUDIT.length = 0;
     const d = makeDispatcher({ getMode: async () => live }, catalog);
-    await d.check({ session: { userId: "u1" }, snapshot, toolFqName: "mt:add_address", args: {} });
+    await d.check({ workspace: { userId: "u1" }, snapshot, toolFqName: "mt:add_address", args: {} });
     expect(AUDIT.some((a) => a.decision === "denied")).toBe(true);
   });
 });

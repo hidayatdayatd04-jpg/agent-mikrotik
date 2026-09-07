@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { eq } from "drizzle-orm";
 import { createDb, type Database } from "../db";
-import { users, routerConnections, changeTransactions } from "../db/schema";
+import { workspaces, routerConnections, changeTransactions } from "../db/schema";
 import { TransactionCoordinator, type SafeModeSession } from "./coordinator";
 import type { Logger } from "../lib/logger";
 
@@ -11,7 +11,7 @@ import type { Logger } from "../lib/logger";
  * locked serialization per physical router, model-facing early commit refused,
  * and reconciliation never re-executes mutations.
  */
-const dbUrl = process.env.DATABASE_URL ?? "postgres://dev:dev@localhost:5432/agent_mikrotik";
+const dbUrl = ":memory:";
 let db: Database;
 let userId: string;
 let connectionId: string;
@@ -21,12 +21,11 @@ const logger: Logger = { debug(){}, info(){}, warn(){}, error(){} };
 beforeAll(async () => {
   try {
     db = createDb(dbUrl);
-    await db.execute("select 1");
+    await db.run("select 1");
   } catch {
-    console.log("no local postgres; skipping transaction tests");
-    return;
+    throw new Error("SQLite test setup failed");
   }
-  const [u] = await db.insert(users).values({ email: `tx-test-${Date.now()}@example.com`, name: "Tx Test" }).returning();
+  const [u] = await db.insert(workspaces).values({ name: "Tx Test" }).returning();
   userId = u!.id;
   const [c] = await db.insert(routerConnections).values({
     userId,
@@ -40,7 +39,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (userId) await db.delete(users).where(eq(users.id, userId));
+  if (userId) await db.delete(workspaces).where(eq(workspaces.id, userId));
 });
 
 /** Fake safe-mode session with injectable behaviors. */
@@ -96,6 +95,24 @@ function makeCoordinator(sessionFactory: () => SafeModeSession, verifyOk = true)
   });
 }
 
+function makeVerifiedCoordinator(sessionFactory: () => SafeModeSession) {
+  let verifiedCalls = 0;
+  const coordinator = new TransactionCoordinator({
+    db,
+    logger,
+    openSession: async () => {
+      throw new Error("openSession must not be used when openVerifiedSession exists");
+    },
+    openVerifiedSession: async () => {
+      verifiedCalls += 1;
+      return sessionFactory();
+    },
+    verifyChecks: async () => ({ ok: true, detail: "checks pass" }),
+    maxActionsPerTransaction: 5,
+  });
+  return { coordinator, verifiedCalls: () => verifiedCalls };
+}
+
 async function beginTx(coordinator: TransactionCoordinator, routerIdentity = `ROUTER-${Date.now()}-${Math.floor(Math.random() * 1e6)}`) {
   return coordinator.begin({
     userId,
@@ -114,15 +131,26 @@ async function stateOf(txId: string): Promise<string> {
 describe("transaction state machine (failure injection)", () => {
   test("happy path: preparing→active→verifying→committing→committed", async () => {
     if (!userId) return;
-    const { session } = makeSession();
+    const { session, calls } = makeSession();
     const coordinator = makeCoordinator(() => session);
     const { transactionId } = await beginTx(coordinator);
     expect(await stateOf(transactionId)).toBe("active");
+    // begin must explicitly enable the safe-mode window, not just probe it
+    expect(calls[0]).toBe("enable");
 
     await coordinator.assertActive(transactionId);
     const r = await coordinator.commit(transactionId, userId);
     expect(r.state).toBe("committed");
     expect(await stateOf(transactionId)).toBe("committed");
+  });
+
+  test("begin prefers openVerifiedSession when provided (legacy openSession untouched)", async () => {
+    if (!userId) return;
+    const { session } = makeSession();
+    const { coordinator, verifiedCalls } = makeVerifiedCoordinator(() => session);
+    const { transactionId } = await beginTx(coordinator, "ROUTER-VERIFIED");
+    expect(await stateOf(transactionId)).toBe("active");
+    expect(verifiedCalls()).toBe(1);
   });
 
   test("verify check fails → rollback, never commit", async () => {
@@ -133,6 +161,38 @@ describe("transaction state machine (failure injection)", () => {
     const r = await coordinator.commit(transactionId, userId);
     expect(r.state).toBe("rolled_back");
     expect(await stateOf(transactionId)).toBe("rolled_back");
+  });
+
+  test("enable throwing (e.g. router demands password change) propagates and releases the lock", async () => {
+    if (!userId) return;
+    const { AppError } = await import("../lib/errors");
+    const failing: SafeModeSession = {
+      async enable() { throw new AppError("SAFE_MODE_UNAVAILABLE", "Router meminta penggantian password admin", 409); },
+      async commit() {},
+      async rollback() {},
+      async status() { return "closed"; },
+    };
+    const coordinator = makeCoordinator(() => failing);
+    await expect(beginTx(coordinator, "ROUTER-PW-CHANGE")).rejects.toThrow(/penggantian password/);
+    // explicit refusal closes the books as rolled_back: a later begin with a
+    // working session proceeds on the same router
+    const { session } = makeSession();
+    const coordinator2 = makeCoordinator(() => session);
+    const { transactionId } = await beginTx(coordinator2, "ROUTER-PW-CHANGE");
+    expect(await stateOf(transactionId)).toBe("active");
+  });
+
+  test("ambiguous enable crash marks the tx unknown and blocks the router until reconciled", async () => {    if (!userId) return;
+    const crashing: SafeModeSession = {
+      async enable() { throw new Error("connection reset"); },
+      async commit() {},
+      async rollback() {},
+      async status() { return "closed"; },
+    };
+    const coordinator = makeCoordinator(() => crashing);
+    await expect(beginTx(coordinator, "ROUTER-CRASH-EN")).rejects.toThrow(/connection reset/);
+    const { session } = makeSession();
+    await expect(beginTx(makeCoordinator(() => session), "ROUTER-CRASH-EN")).rejects.toThrow(/status tidak diketahui/);
   });
 
   test("commit with connection drop mid-commit → unknown, not success; window probe prevents false claim", async () => {

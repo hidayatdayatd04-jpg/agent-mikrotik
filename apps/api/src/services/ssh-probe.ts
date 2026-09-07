@@ -61,12 +61,13 @@ export function probeRouter(opts: SshProbeOptions): Promise<SshProbeResult> {
         });
         (stream as ClientChannel).on("close", () => {
           clearTimeout(timer);
-          const identityMatch = out.match(/identity:\s*(\S+)/i);
+          const identityMatch = out.match(/(?:name|identity):\s*([^\r\n]+)/i);
+          const routerIdentity = identityMatch?.[1]?.trim() ?? "unknown";
           finish({
             ok: true,
             kind: "ok",
             fingerprint: seenFingerprint,
-            routerIdentity: identityMatch?.[1] ?? "unknown",
+            routerIdentity,
             message: "Koneksi SSH berhasil.",
           });
         });

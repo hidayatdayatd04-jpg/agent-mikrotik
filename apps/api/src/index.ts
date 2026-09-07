@@ -1,28 +1,36 @@
+import { resolve } from "node:path";
+import { serveStatic } from "hono/bun";
+import { bodyLimit } from "hono/body-limit";
+import { ensureLocalKey } from "./lib/local-files";
+import { sessionAuth } from "./middleware/session";
+import { ensureSeedAccount } from "./services/auth";
+import { localOnly } from "./middleware/local-only";
 import { Hono } from "hono";
 import { loadConfig } from "./lib/config";
 import { createLogger } from "./lib/logger";
 import { AppError, errorBody, statusForCode } from "./lib/errors";
 import { randomUUID } from "node:crypto";
 import type { Env as HonoEnv } from "./types";
-import { createDb } from "./db";
+import { createDb, recoverLocalState } from "./db";
 import { checkDatabase } from "./db/health";
-import { createAuthService, MockEmailSender, type EmailSender } from "./services/auth";
-import { BrevoSmtpSender } from "./services/brevo-smtp";
-import { createAuthRoutes } from "./routes/auth";
 import { createConnectorService } from "./services/connector";
 import { createConnectorRoutes } from "./routes/connectors";
 import { createTargetPolicy } from "./services/target-policy";
-import { makeKeyRing } from "./lib/crypto";
+import { envKeyRing } from "./lib/crypto";
 import { McpSupervisor } from "./mcp/supervisor";
 import { makeSpawnPlan } from "./mcp/spawn-plan";
 import { RosettaProcess } from "./mcp/rosetta";
 import { createRequire } from "node:module";
-import { getCookie } from "hono/cookie";
-import { SESSION_COOKIE } from "./middleware/session";
+import { createAuthRoutes } from "./routes/auth";
+import { createActivityRoutes } from "./routes/activities";
+import { createCompactionRoutes } from "./routes/compaction";
+import { createTerminalRoutes } from "./routes/terminal";
+import { createPreferencesRoutes } from "./routes/preferences";
 
 const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL);
-const db = createDb(config.DATABASE_URL);
+const db = createDb(resolve(config.DATA_DIR, "agent.sqlite"));
+recoverLocalState(db);
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -31,7 +39,7 @@ function resolveRosettaCli(): string {
   return nodeRequire.resolve("@tikoci/rosetta/bin/rosetta.js");
 }
 
-const keyRing = makeKeyRing(config.ROUTER_CREDENTIAL_KEY, config.ROUTER_CREDENTIAL_KEY_VERSION, config.ROUTER_CREDENTIAL_KEY_PREVIOUS, config.ROUTER_CREDENTIAL_KEY_PREVIOUS_VERSION, config.isProduction, logger);
+const keyRing = envKeyRing({ 1: ensureLocalKey(config.DATA_DIR) }, 1);
 
 const supervisor = new McpSupervisor(
   makeSpawnPlan(config.MCP_BUN_EXECUTABLE),
@@ -104,23 +112,6 @@ const dispatcher = new PolicyDispatcher({
   },
 });
 
-const email: EmailSender = config.useMockEmail
-  ? new MockEmailSender((m, d) => logger.warn(m, d))
-  : new BrevoSmtpSender(
-      {
-        host: config.BREVO_SMTP_HOST,
-        port: config.BREVO_SMTP_PORT,
-        login: config.BREVO_SMTP_LOGIN!,
-        smtpKey: config.BREVO_SMTP_KEY!,
-        senderName: config.BREVO_SENDER_NAME,
-        senderEmail: config.BREVO_SENDER_EMAIL!,
-      },
-      logger,
-    );
-
-const auth = createAuthService(db, config, email);
-const authRoutes = createAuthRoutes({ auth, email, logger, otpSecret: config.OTP_HMAC_SECRET ?? "dev-otp", db, config });
-
 // M6 transaction coordinator: backend-only safe-mode state machine.
 const safeModeSessions = createSafeModeSessionFactory({
   supervisor,
@@ -147,6 +138,7 @@ const txCoordinator = new TransactionCoordinator({
   logger,
   maxActionsPerTransaction: config.MAX_ACTIONS_PER_TRANSACTION,
   openSession: (ctx) => safeModeSessions.openSession(ctx),
+  openVerifiedSession: (ctx) => safeModeSessions.openVerifiedSession(ctx),
   verifyChecks: (ctx) => safeModeSessions.verifyManagement(ctx),
 });
 
@@ -162,8 +154,45 @@ import { createAiProviderRoutes } from "./routes/ai-provider";
 import { createChatRoutes } from "./routes/chat";
 import { createAttachmentRoutes } from "./routes/attachments";
 import { createStorageService, detectContentKind } from "./services/storage";
+import { globalCheckpoints, globalRateLimiter } from "./agent/rate-limiter";
+import { parseRateLimitOverrides } from "./lib/config";
+import { createFallbackChatClient, type FallbackCandidate } from "./agent/model-fallback";
 
 const providerSettings = createProviderSettingsService({ db, keyRing, logger });
+// Rate limiter terpusat untuk seluruh model/provider (chat, retry, background).
+{
+  const overrides = parseRateLimitOverrides(config.RATE_LIMIT_OVERRIDES_JSON);
+  globalRateLimiter.setDefaults({ rpm: config.RATE_LIMIT_RPM, tpm: config.RATE_LIMIT_TPM });
+  for (const [k, v] of Object.entries(overrides.providerOverrides)) globalRateLimiter.setProviderOverride(k, v);
+  for (const [k, v] of Object.entries(overrides.modelOverrides)) globalRateLimiter.setModelOverride(k, v);
+  for (const [k, v] of Object.entries(overrides.sharedOverrides)) globalRateLimiter.setSharedOverride(k, v);
+}
+
+/** Bungkus client OpenAI-compatible dengan fallback antar model (read-only safe). */
+function makeRateLimitedClient(
+  cfg: import("./agent/provider-settings").ProviderConfigWithKey,
+  fallbackCandidates: FallbackCandidate[] = [],
+  runContext?: { runId: string | null; conversationId: string | null; userId: string | null; userText: string | null; policyMode: "read-only" | "write" },
+) {
+  const base = (c: FallbackCandidate) => {
+    // Kandidat membawa baseUrl/name sendiri bila dari fallback list; primer memakai cfg.
+    const isPrimary = `${c.providerKind}:${c.model}` === `${cfg.kind}:${cfg.model}`;
+    const effective = isPrimary
+      ? cfg
+      : {
+          ...cfg,
+          kind: c.providerKind as typeof cfg.kind,
+          model: c.model,
+          baseUrl: (c as { baseUrl?: string }).baseUrl ?? cfg.baseUrl,
+          name: (c as { name?: string }).name ?? cfg.name,
+          apiKey: c.apiKey ?? cfg.apiKey,
+        };
+    return createOpenAiCompatibleClient(effective, logger, { limiter: globalRateLimiter });
+  };
+  if (fallbackCandidates.length === 0) return base({ providerId: cfg.id ?? cfg.kind, providerKind: cfg.kind, model: cfg.model, enabled: true, apiKey: cfg.apiKey });
+  const primary: FallbackCandidate = { providerId: cfg.id ?? cfg.kind, providerKind: cfg.kind, model: cfg.model, enabled: true, apiKey: cfg.apiKey };
+  return createFallbackChatClient(primary, fallbackCandidates, base, { limiter: globalRateLimiter, checkpoints: globalCheckpoints, logger, runContext });
+}
 const executeTool = createToolExecutor({ supervisor, connectors, logger });
 const executeDocsTool = async (input: { fqName: string; args: unknown }): Promise<{ ok: boolean; output: string; errorCode?: string }> => {
   const rawName = input.fqName.includes(":") ? input.fqName.split(":")[1]! : input.fqName;
@@ -196,21 +225,10 @@ const agentLoop = createAgentLoop({
   },
 });
 
-const connectorRoutes = createConnectorRoutes({ connectors, supervisor, txCoordinator, safeModeSessions, logger });
+const connectorRoutes = createConnectorRoutes({ connectors, supervisor, txCoordinator, safeModeSessions, logger, invalidateCatalog: () => catalogSource.invalidate() });
 const transactionRoutes = createTransactionRoutes({ coordinator: txCoordinator, connectors, db, logger });
-const aiProviderRoutes = createAiProviderRoutes({ providers: providerSettings, logger });
-const storage = config.B2_KEY_ID && config.B2_APPLICATION_KEY && config.B2_BUCKET && config.B2_ENDPOINT && config.B2_REGION
-  ? createStorageService({
-      config: {
-        keyId: config.B2_KEY_ID,
-        applicationKey: config.B2_APPLICATION_KEY,
-        bucket: config.B2_BUCKET,
-        region: config.B2_REGION,
-        endpoint: config.B2_ENDPOINT,
-      },
-      logger,
-    })
-  : null;
+const aiProviderRoutes = createAiProviderRoutes({ providers: providerSettings, logger, limiter: globalRateLimiter, checkpoints: globalCheckpoints });
+const storage = createStorageService({ directory: config.DATA_DIR });
 const attachmentRoutes = createAttachmentRoutes({
   db,
   logger,
@@ -223,8 +241,11 @@ const chatRoutes = createChatRoutes({
   loop: agentLoop,
   hub,
   connectors,
-  getProvider: (userId) => providerSettings.getWithKey(userId),
-  makeClient: (cfg) => createOpenAiCompatibleClient(cfg, logger),
+  transactions: txCoordinator,
+  getProvider: (userId, model, providerId) => providerSettings.resolveForRun(userId, { model, providerId }),
+  getFallbackCandidates: (userId, model, providerId) =>
+    providerSettings.listFallbackCandidates(userId, { model, providerId }) as Promise<FallbackCandidate[]>,
+  makeClient: (cfg, fallbackCandidates, runContext) => makeRateLimitedClient(cfg, fallbackCandidates ?? [], runContext),
   makeMockClient: () => createMockClient(),
   executeTool,
   executeDocsTool,
@@ -261,6 +282,10 @@ const chatRoutes = createChatRoutes({
   runRateLimit: { maxRuns: 20, windowMs: 60_000 },
 });
 
+void ensureSeedAccount(db, logger).catch((err) =>
+  logger.error("seed account failed", { message: err instanceof Error ? err.message : String(err) }),
+);
+
 const app = new Hono<HonoEnv>();
 
 app.use(async (c, next) => {
@@ -269,16 +294,38 @@ app.use(async (c, next) => {
   c.set("logger", logger);
   c.set("db", db);
   c.set("dispatcher", dispatcher);
-  const token = getCookie(c, SESSION_COOKIE);
-  c.set("session", token ? await auth.resolveSession(token) : null);
+  c.set("workspace", null);
+  c.set("account", null);
+  c.set("sessionId", null);
   await next();
 });
 
+app.use("*", localOnly(config.API_PORT, !config.isProduction));
+app.use("*", sessionAuth(db));
+app.use("/api/*", bodyLimit({ maxSize: config.UPLOAD_MAX_BYTES + 1024 * 1024 }));
+const authRoutes = createAuthRoutes({ db, logger });
+const activityRoutes = createActivityRoutes({ db });
+const compactionRoutes = createCompactionRoutes({
+  db,
+  logger,
+  getProviderClient: async (userId: string) => {
+    const cfg = await providerSettings.resolveForRun(userId, {});
+    if (!cfg) return null;
+    // Background task wajib lewat limiter terpusat yang sama (#1).
+    return { client: createOpenAiCompatibleClient(cfg, logger, { limiter: globalRateLimiter }), model: cfg.model, provider: cfg.kind };
+  },
+});
+const terminalRoutes = createTerminalRoutes({ db, logger, connectors, transactions: txCoordinator });
+const preferencesRoutes = createPreferencesRoutes({ db, logger });
 app.route("/api/auth", authRoutes);
+app.route("/api/preferences", preferencesRoutes);
+app.route("/api/terminal", terminalRoutes);
 app.route("/api/connectors", connectorRoutes);
 app.route("/api/transactions", transactionRoutes);
 app.route("/api/ai-provider", aiProviderRoutes);
 app.route("/api/attachments", attachmentRoutes);
+app.route("/", activityRoutes);
+app.route("/", compactionRoutes);
 app.route("/", chatRoutes);
 
 app.onError((err, c) => {
@@ -316,7 +363,6 @@ app.get("/api/ping", (c) => c.json({ pong: true, requestId: c.get("requestId") }
 
 // Documentation search through the shared Rosetta process (no router credentials involved).
 app.get("/api/tools/rosetta", async (c) => {
-  if (!c.get("session")) throw new AppError("AUTH_REQUIRED", "Silakan masuk terlebih dahulu.", 401);
   const tools = await rosetta.listTools();
   return c.json({
     tools: tools.map((t) => ({
@@ -327,7 +373,6 @@ app.get("/api/tools/rosetta", async (c) => {
 });
 
 app.post("/api/tools/rosetta/search", async (c) => {
-  if (!c.get("session")) throw new AppError("AUTH_REQUIRED", "Silakan masuk terlebih dahulu.", 401);
   const body = (await c.req.json().catch(() => null)) as { query?: string } | null;
   const query = body?.query?.trim();
   if (!query || query.length > 256) {
@@ -337,16 +382,25 @@ app.post("/api/tools/rosetta/search", async (c) => {
   return c.json({ result });
 });
 
+const webRoot = process.env.MIKROTIK_WEB_DIR ?? resolve(import.meta.dir, "../../web/dist");
+app.get("*", async (c, next) => {
+  if (c.req.path.startsWith("/api/") || c.req.path.startsWith("/health/")) return next();
+  return serveStatic({ root: webRoot })(c, next);
+});
+app.get("*", async (c, next) => {
+  if (c.req.path.startsWith("/api/") || c.req.path.startsWith("/health/")) return next();
+  return serveStatic({ path: resolve(webRoot, "index.html") })(c, next);
+});
+
 const port = config.API_PORT;
 logger.info(`starting api server on :${port}`, {
   nodeEnv: config.NODE_ENV,
-  mockEmail: config.useMockEmail,
   mockProvider: config.useMockProvider,
-  mockOAuth: config.useMockOAuth,
 });
 
 export default {
   port,
+  hostname: "127.0.0.1",
   fetch: app.fetch,
   app,
   // graceful shutdown (Docker SIGTERM): stop supervised MCP children so no
@@ -358,6 +412,7 @@ const shutdown = async (signal: string) => {
   logger.info("graceful shutdown started", { signal });
   try {
     await supervisor.shutdownAll();
+    await rosetta.shutdown();
   } catch (err) {
     logger.error("supervisor shutdown error", { message: err instanceof Error ? err.message : String(err) });
   }

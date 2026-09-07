@@ -3,7 +3,7 @@ import type { NormalizedTool } from "./normalize";
 /**
  * Policy dispatcher — single execution path for every tool call.
  *
- * Re-checks EVERYTHING at dispatch time: session, connector ownership,
+ * Re-checks EVERYTHING at dispatch time: workspace, connector ownership,
  * current mode + version (compare-and-set race window), tool allowlist for
  * that mode, input schema, and transaction state. Nothing is pre-authorized.
  */
@@ -23,7 +23,7 @@ export interface ModeSource {
 }
 
 export interface DispatchCheckInput {
-  session: { userId: string } | null;
+  workspace: { userId: string } | null;
   snapshot: PolicySnapshot;
   toolFqName: string;
   args: unknown;
@@ -42,11 +42,18 @@ export interface SchemaValidator {
   validate(schema: unknown, input: unknown): { ok: boolean; message?: string };
 }
 
-/** Sensitive argument names an LLM must never set — they come from connector context only. */
+/**
+ * Connection-target argument names an LLM must never set — the SSH target and
+ * credentials always come from the server-side connector, never from tool args.
+ * Deliberately NARROW: legitimate RouterOS rule parameters such as `address`,
+ * `ip`, `port`, `device`, `target`, or file names must stay usable (e.g.
+ * `add_ip_address` requires `address`; filter rules accept `port`). The
+ * per-connection MCP child is already bound to one router, so rule data args
+ * cannot redirect execution elsewhere.
+ */
 const FORBIDDEN_ARG_NAMES = new Set([
-  "host", "hostname", "ip", "address", "port",
+  "host", "hostname",
   "username", "user", "password", "credential", "credentials",
-  "device", "target", "path", "filepath", "localpath", "tenant",
 ]);
 
 /**
@@ -80,13 +87,13 @@ export class PolicyDispatcher {
    * an in-flight call holding a stale snapshot.
    */
   async check(input: DispatchCheckInput): Promise<DispatchDecision> {
-    const { session, snapshot, toolFqName, args } = input;
+    const { workspace, snapshot, toolFqName, args } = input;
 
-    if (!session) {
-      return this.deny(snapshot, toolFqName, "AUTH_REQUIRED", "Sesi tidak valid.");
+    if (!workspace) {
+      return this.deny(snapshot, toolFqName, "FORBIDDEN", "Workspace tidak valid.");
     }
-    if (session.userId !== snapshot.userId) {
-      return this.deny(snapshot, toolFqName, "FORBIDDEN", "Sesi tidak cocok dengan connector owner.");
+    if (workspace.userId !== snapshot.userId) {
+      return this.deny(snapshot, toolFqName, "FORBIDDEN", "Workspace tidak cocok dengan connector owner.");
     }
 
     // 1. live mode re-check (CAS race: OFF from another tab).
@@ -155,7 +162,7 @@ export class PolicyDispatcher {
       return this.deny(snapshot, toolFqName, "VALIDATION_FAILED", v.message ?? "Argumen tool tidak sesuai schema.");
     }
 
-    // 6. forbidden argument names (device/host/credential switching)
+    // 6. forbidden argument names (connection host/credential switching)
     if (args && typeof args === "object") {
       for (const key of Object.keys(args as Record<string, unknown>)) {
         if (FORBIDDEN_ARG_NAMES.has(key.toLowerCase())) {

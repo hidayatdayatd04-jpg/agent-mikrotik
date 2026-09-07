@@ -3,8 +3,6 @@ import {
   sealSecret,
   openSecret,
   envKeyRing,
-  hmacDigest,
-  constantTimeEquals,
   makeKeyRing,
   type SealedSecret,
 } from "./crypto";
@@ -73,18 +71,5 @@ describe("sealSecret/openSecret round-trip", () => {
     const sealed = sealSecret(ring, "secret", "user-1", "conn-1");
     const noKeyRing = envKeyRing({}, 1);
     expect(openSecret(noKeyRing, sealed, "user-1", "conn-1")).toBeNull();
-  });
-});
-
-describe("hmacDigest / constantTimeEquals", () => {
-  test("digest is deterministic and keyed", () => {
-    expect(hmacDigest("k1", "a", "b")).toBe(hmacDigest("k1", "a", "b"));
-    expect(hmacDigest("k1", "a", "b")).not.toBe(hmacDigest("k2", "a", "b"));
-    expect(hmacDigest("k1", "a", "b")).not.toBe(hmacDigest("k1", "b", "a"));
-  });
-  test("constantTimeEquals", () => {
-    expect(constantTimeEquals("abc", "abc")).toBe(true);
-    expect(constantTimeEquals("abc", "abd")).toBe(false);
-    expect(constantTimeEquals("abc", "abcd")).toBe(false);
   });
 });

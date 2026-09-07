@@ -6,7 +6,7 @@ import { AppError } from "../lib/errors";
 import { changeTransactions } from "../db/schema";
 import type { TransactionCoordinator } from "../transactions/coordinator";
 import type { Logger } from "../lib/logger";
-import type { SessionContext } from "../services/auth";
+import type { WorkspaceContext } from "../lib/workspace";
 
 /**
  * Owner-facing transaction endpoints (M6). The MODEL never calls these — the
@@ -30,14 +30,14 @@ export function createTransactionRoutes(deps: {
   const routes = new Hono<Env>();
 
   routes.get("/", async (c) => {
-    const session = requireSession(c);
+    const workspace = requireWorkspace(c);
     const rows = await deps.db
       .select()
       .from(changeTransactions)
       .orderBy(desc(changeTransactions.updatedAt))
       .limit(50);
     // owner-scoped: only the owner's transactions, no other-user identity
-    const mine = rows.filter((r) => r.lockOwner === session.userId);
+    const mine = rows.filter((r) => r.lockOwner === workspace.userId);
     return c.json({
       transactions: mine.map((r) => ({
         id: r.id,
@@ -50,16 +50,16 @@ export function createTransactionRoutes(deps: {
   });
 
   routes.post("/begin", async (c) => {
-    const session = requireSession(c);
+    const workspace = requireWorkspace(c);
     const body = (await c.req.json().catch(() => null)) as { connectionId?: string; runId?: string | null } | null;
     if (!body?.connectionId) {
       throw new AppError("VALIDATION_FAILED", "connectionId wajib diisi.", 422);
     }
-    const conn = await deps.connectors.requireOwned(session.userId, body.connectionId)();
+    const conn = await deps.connectors.requireOwned(workspace.userId, body.connectionId)();
     if (conn.status !== "connected") {
       throw new AppError("CONFLICT", "Connector harus tersambung dan terverifikasi sebelum transaksi.", 409);
     }
-    const { mode } = await deps.connectors.getMode(session.userId, body.connectionId);
+    const { mode } = await deps.connectors.getMode(workspace.userId, body.connectionId);
     if (mode !== "write") {
       throw new AppError("SAFE_MODE_UNAVAILABLE", "Transaksi hanya tersedia pada mode Write.", 409);
     }
@@ -67,7 +67,7 @@ export function createTransactionRoutes(deps: {
       throw new AppError("CONFLICT", "Identitas router belum terverifikasi; sambungkan ulang connector.", 409);
     }
     const { transactionId } = await deps.coordinator.begin({
-      userId: session.userId,
+      userId: workspace.userId,
       connectionId: body.connectionId,
       routerIdentity: conn.routerIdentity,
       runId: body.runId ?? null,
@@ -77,23 +77,37 @@ export function createTransactionRoutes(deps: {
   });
 
   routes.post("/:id/commit", async (c) => {
-    const session = requireSession(c);
-    const r = await deps.coordinator.commit(c.req.param("id"), session.userId);
+    const workspace = requireWorkspace(c);
+    const r = await deps.coordinator.commit(c.req.param("id"), workspace.userId);
     return c.json(r);
   });
 
   routes.post("/:id/rollback", async (c) => {
-    const session = requireSession(c);
-    const r = await deps.coordinator.rollback(c.req.param("id"), session.userId, { reason: "permintaan pengguna" });
+    const workspace = requireWorkspace(c);
+    const r = await deps.coordinator.rollback(c.req.param("id"), workspace.userId, { reason: "permintaan pengguna" });
+    return c.json(r);
+  });
+
+  routes.post("/:id/reconcile", async (c) => {
+    const workspace = requireWorkspace(c);
+    const [row] = await deps.db
+      .select()
+      .from(changeTransactions)
+      .where(and(eq(changeTransactions.id, c.req.param("id")), eq(changeTransactions.lockOwner, workspace.userId)))
+      .limit(1);
+    if (!row) throw new AppError("NOT_FOUND", "Transaksi tidak ditemukan.", 404);
+    // reconcile never replays mutations: it probes the router window and
+    // closes the books as rolled_back (or unknown when unreadable)
+    const r = await deps.coordinator.reconcile(c.req.param("id"));
     return c.json(r);
   });
 
   routes.get("/:id", async (c) => {
-    const session = requireSession(c);
+    const workspace = requireWorkspace(c);
     const [row] = await deps.db
       .select()
       .from(changeTransactions)
-      .where(and(eq(changeTransactions.id, c.req.param("id")), eq(changeTransactions.lockOwner, session.userId)))
+      .where(and(eq(changeTransactions.id, c.req.param("id")), eq(changeTransactions.lockOwner, workspace.userId)))
       .limit(1);
     if (!row) throw new AppError("NOT_FOUND", "Transaksi tidak ditemukan.", 404);
     return c.json({
@@ -107,10 +121,10 @@ export function createTransactionRoutes(deps: {
     });
   });
 
-  function requireSession(c: { get: (k: "session") => unknown }): SessionContext {
-    const s = c.get("session");
-    if (!s) throw new AppError("AUTH_REQUIRED", "Silakan masuk terlebih dahulu.", 401);
-    return s as SessionContext;
+  function requireWorkspace(c: { get: (k: "workspace") => unknown }): WorkspaceContext {
+    const s = c.get("workspace");
+    if (!s) throw new AppError("UNAUTHORIZED", "Session habis atau belum login. Silakan login kembali.", 401);
+    return s as WorkspaceContext;
   }
 
   return routes;

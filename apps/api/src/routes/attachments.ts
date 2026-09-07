@@ -5,16 +5,11 @@ import type { Database } from "../db";
 import { AppError } from "../lib/errors";
 import { attachments, conversations } from "../db/schema";
 import type { Logger } from "../lib/logger";
-import type { SessionContext } from "../services/auth";
+import type { WorkspaceContext } from "../lib/workspace";
 import type { StorageService, } from "../services/storage";
 import { detectContentKind } from "../services/storage";
 
-/**
- * Attachment routes (M8): multipart upload proxied through the backend so
- * size/type validation happens BEFORE the object exists in B2. The browser
- * never gets B2 credentials or presigned URLs; downloads are streamed by the
- * backend after an ownership check. Object keys are server-generated.
- */
+/** Validated local attachments, served only through the API. */
 export function createAttachmentRoutes(deps: {
   db: Database;
   logger: Logger;
@@ -23,15 +18,15 @@ export function createAttachmentRoutes(deps: {
 }) {
   const routes = new Hono<Env>();
 
-  function requireSession(c: { get: (k: "session") => unknown }): SessionContext {
-    const s = c.get("session");
-    if (!s) throw new AppError("AUTH_REQUIRED", "Silakan masuk terlebih dahulu.", 401);
-    return s as SessionContext;
+  function requireWorkspace(c: { get: (k: "workspace") => unknown }): WorkspaceContext {
+    const s = c.get("workspace");
+    if (!s) throw new AppError("UNAUTHORIZED", "Session habis atau belum login. Silakan login kembali.", 401);
+    return s as WorkspaceContext;
   }
 
   function requireStorage(): StorageService {
     if (!deps.storage) {
-      throw new AppError("STORAGE_UNAVAILABLE", "Penyimpanan objek belum dikonfigurasi (B2_KEY_ID/B2_APPLICATION_KEY/B2_BUCKET).", 503);
+      throw new AppError("STORAGE_UNAVAILABLE", "Penyimpanan lokal tidak tersedia.", 503);
     }
     return deps.storage;
   }
@@ -47,7 +42,7 @@ export function createAttachmentRoutes(deps: {
 
   /** Effective limits for the UI. */
   routes.get("/limits", (c) => {
-    requireSession(c);
+    requireWorkspace(c);
     return c.json({
       maxBytes: deps.limits.maxBytes,
       maxFilesPerMessage: deps.limits.maxFilesPerMessage,
@@ -57,7 +52,7 @@ export function createAttachmentRoutes(deps: {
 
   /** Upload one file into a conversation. Multipart, streamed with a hard byte cap. */
   routes.post("/:conversationId/files", async (c) => {
-    const s = requireSession(c);
+    const s = requireWorkspace(c);
     const storage = requireStorage();
     const conversationId = c.req.param("conversationId");
     await requireConversationOwned(s.userId, conversationId);
@@ -110,7 +105,7 @@ export function createAttachmentRoutes(deps: {
 
   /** List attachments of a conversation (owner only). */
   routes.get("/:conversationId/files", async (c) => {
-    const s = requireSession(c);
+    const s = requireWorkspace(c);
     const conversationId = c.req.param("conversationId");
     await requireConversationOwned(s.userId, conversationId);
     const rows = await deps.db
@@ -130,7 +125,7 @@ export function createAttachmentRoutes(deps: {
 
   /** Download raw bytes — ownership checked against the DB row, never the key. */
   routes.get("/files/:attachmentId", async (c) => {
-    const s = requireSession(c);
+    const s = requireWorkspace(c);
     const storage = requireStorage();
     const attachmentId = c.req.param("attachmentId");
     const [row] = await deps.db
@@ -152,7 +147,7 @@ export function createAttachmentRoutes(deps: {
 
   /** Delete a draft attachment (before send) — object removed, row removed. */
   routes.delete("/files/:attachmentId", async (c) => {
-    const s = requireSession(c);
+    const s = requireWorkspace(c);
     const storage = requireStorage();
     const attachmentId = c.req.param("attachmentId");
     const [row] = await deps.db
@@ -168,7 +163,7 @@ export function createAttachmentRoutes(deps: {
 
   /** Orphan sweep: uploading/failed rows older than cutoff with no message bound. */
   routes.post("/cleanup", async (c) => {
-    const s = requireSession(c);
+    const s = requireWorkspace(c);
     const storage = requireStorage();
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const rows = await deps.db

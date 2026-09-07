@@ -2,13 +2,43 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 import type { ConnectorDTO, RouterMode } from "@shared/index";
 
+export interface DiscoveredRouterDTO {
+  ip: string;
+  mac: string;
+  identity: string;
+  version: string;
+  platform: string;
+  board: string;
+  interface: string;
+  ipv4: string;
+  uptimeSeconds?: number;
+  sshAvailable: boolean;
+  alreadyAdded: boolean;
+  connectorId?: string | null;
+  connectorStatus?: string | null;
+}
+
 export function useConnectors() {
   return useQuery({
     queryKey: ["connectors"],
+    // Re-poll: a backend restart revokes write + disconnects (by design), and
+    // a cached "Write aktif" badge would otherwise lie to the user.
+    refetchInterval: 15_000,
     queryFn: async () => {
       const res = await apiFetch<{ connectors: ConnectorDTO[] }>("/api/connectors");
       return res.connectors;
     },
+  });
+}
+
+export function useDiscoverConnectors() {
+  return useQuery({
+    queryKey: ["connectors", "discover"],
+    queryFn: async () => {
+      const res = await apiFetch<{ discovered: DiscoveredRouterDTO[] }>("/api/connectors/discover");
+      return res.discovered;
+    },
+    staleTime: 10_000,
   });
 }
 
@@ -63,6 +93,29 @@ export function useSetConnectorMode(id: string) {
         body: JSON.stringify(input),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["connectors"] }),
+  });
+}
+
+export interface WriteReadinessDTO {
+  connectorId: string;
+  status: string;
+  mode: RouterMode;
+  modeVersion: number;
+  /** true = stored secret empty (write cannot work); null = unreadable */
+  credentialEmpty: boolean | null;
+  blocked: "read-only" | "disconnected" | "empty-credential" | "credential-unreadable" | null;
+}
+
+/** User-facing write-block reason. Only booleans cross the wire — never secrets. */
+export function useWriteReadiness(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ["write-readiness", id],
+    enabled: !!id,
+    refetchInterval: 15_000,
+    queryFn: async () => {
+      const res = await apiFetch<WriteReadinessDTO>(`/api/connectors/${id}/write-readiness`);
+      return res;
+    },
   });
 }
 

@@ -1,27 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { Logger } from "../lib/logger";
+import { mkdir, readFile, writeFile, rename, unlink } from "node:fs/promises";
+import { resolve, dirname } from "node:path";
 import { AppError } from "../lib/errors";
-
-/**
- * Private object storage on Backblaze B2 via the NATIVE B2 API (M8).
- *
- * Why not the S3-compatible API: the Master Application Key id used by this
- * deployment (12-hex-char keyId) is rejected by AWS SigV4 parsers with
- * "Malformed Access Key Id", while the same key authenticates fine against
- * the native B2 JSON API (verified end-to-end in M6 and again while writing
- * M8 — docs/decisions.md D-010/D-012). All objects live in one private
- * bucket; the browser never receives B2 credentials or presigned URLs — the
- * backend streams uploads/downloads and enforces ownership via the
- * attachments table before touching the object.
- */
-
-export interface StorageConfig {
-  keyId: string;
-  applicationKey: string;
-  bucket: string;
-  region: string;
-  endpoint: string;
-}
 
 export const UPLOAD_ALLOWED = {
   "image/png": { ext: "png", kind: "image" as const },
@@ -36,17 +16,6 @@ export const UPLOAD_ALLOWED = {
 
 const TEXTUAL_EXTENSIONS = new Set(["txt", "csv", "log", "rsc"]);
 const MAX_OBJECT_KEY_LEN = 512;
-const AUTH_TTL_MS = 60 * 60 * 1000; // re-authorize hourly
-
-interface B2Auth {
-  token: string;
-  apiUrl: string;
-  downloadUrl: string;
-  accountId: string;
-  bucketId: string | null;
-  expiresAt: number;
-}
-
 /** Magic-byte sniffing: extension/MIME claims are not trusted. */
 export function detectContentKind(input: { mimeType: string; originalName: string; head: Buffer }): { ok: boolean; kind: "image" | "pdf" | "text" | "unsupported"; reason?: string } {
   const name = input.originalName.toLowerCase();
@@ -83,161 +52,39 @@ export function detectContentKind(input: { mimeType: string; originalName: strin
   return { ok: false, kind: "unsupported", reason: `Tipe file .${ext || "?"} (${input.mimeType}) tidak didukung. Gunakan PNG/JPEG/WebP, PDF, TXT, CSV, LOG, atau RSC.` };
 }
 
-export function createStorageService(deps: { config: StorageConfig; logger: Logger }) {
-  let auth: B2Auth | null = null;
-  let authorizePromise: Promise<B2Auth> | null = null;
-
-  async function authorize(force = false): Promise<B2Auth> {
-    if (!force && auth && auth.expiresAt > Date.now()) return auth;
-    if (authorizePromise) return authorizePromise;
-    authorizePromise = (async () => {
-      const basic = Buffer.from(`${deps.config.keyId}:${deps.config.applicationKey}`).toString("base64");
-      const res = await fetch("https://api.backblazeb2.com/b2api/v3/b2_authorize_account", {
-        headers: { Authorization: `Basic ${basic}` },
-      });
-      if (!res.ok) {
-        deps.logger.warn("b2 authorize failed", { status: res.status });
-        throw new AppError("STORAGE_UNAVAILABLE", "Autentikasi penyimpanan B2 gagal.", 502);
-      }
-      const j = (await res.json()) as {
-        authorizationToken?: string;
-        accountId?: string;
-        apiInfo?: { storageApi?: { apiUrl?: string; downloadUrl?: string; bucketId?: string | null } };
-      };
-      const api = j.apiInfo?.storageApi;
-      if (!j.authorizationToken || !api?.apiUrl || !api?.downloadUrl) {
-        throw new AppError("STORAGE_UNAVAILABLE", "Respons B2 tidak lengkap.", 502);
-      }
-      const fresh: B2Auth = {
-        token: j.authorizationToken,
-        apiUrl: api.apiUrl,
-        downloadUrl: api.downloadUrl,
-        accountId: j.accountId ?? "",
-        bucketId: api.bucketId ?? null,
-        expiresAt: Date.now() + AUTH_TTL_MS,
-      };
-      auth = fresh;
-      return fresh;
-    })();
-    try {
-      return await authorizePromise;
-    } finally {
-      authorizePromise = null;
+/** Local files addressed only by server-generated object keys. */
+export function createStorageService(deps: { directory: string }) {
+  const root = resolve(deps.directory);
+  function pathFor(key: string) {
+    if (key.length > MAX_OBJECT_KEY_LEN || !/^attachments\/[a-zA-Z0-9-]+\/[a-zA-Z0-9-]+\/[a-f0-9]{32}\.[a-z0-9]+$/.test(key)) {
+      throw new AppError("VALIDATION_FAILED", "Object key lokal tidak valid.", 422);
     }
+    return resolve(root, ...key.split("/"));
   }
-
-  async function requireBucketId(): Promise<{ a: B2Auth; bucketId: string }> {
-    const a = await authorize();
-    if (a.bucketId) return { a, bucketId: a.bucketId };
-    // key scoped to one bucket: look the id up once
-    const res = await fetch(`${a.apiUrl}/b2api/v3/b2_list_buckets`, {
-      method: "POST",
-      headers: { Authorization: a.token, "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId: a.accountId }),
-    });
-    if (!res.ok) throw new AppError("STORAGE_UNAVAILABLE", "Gagal membaca daftar bucket B2.", 502);
-    const j = (await res.json()) as { buckets?: { bucketId: string; bucketName: string }[] };
-    const hit = j.buckets?.find((b) => b.bucketName === deps.config.bucket);
-    if (!hit) throw new AppError("STORAGE_UNAVAILABLE", `Bucket ${deps.config.bucket} tidak ditemukan.`, 502);
-    a.bucketId = hit.bucketId;
-    return { a, bucketId: hit.bucketId };
-  }
-
-  /** Server-owned object key: attachments/{userId}/{conversationId}/{random}.ext */
-  function buildObjectKey(userId: string, conversationId: string, ext: string): string {
-    const rand = randomBytes(16).toString("hex");
-    const key = `attachments/${userId}/${conversationId}/${rand}.${ext || "bin"}`;
-    if (key.length > MAX_OBJECT_KEY_LEN) throw new AppError("VALIDATION_FAILED", "Object key terlalu panjang.", 422);
+  function buildObjectKey(userId: string, conversationId: string, ext: string) {
+    const key = `attachments/${userId}/${conversationId}/${randomBytes(16).toString("hex")}.${ext || "bin"}`;
+    pathFor(key);
     return key;
   }
-
-  async function put(input: { objectKey: string; body: Buffer; contentType: string; contentLength: number }): Promise<{ checksum: string; fileId: string }> {
+  async function put(input: { objectKey: string; body: Buffer; contentType: string; contentLength: number }) {
+    const target = pathFor(input.objectKey);
+    if (input.contentLength !== input.body.length) throw new AppError("VALIDATION_FAILED", "Ukuran file tidak cocok.", 422);
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    const temporary = `${target}.${randomBytes(8).toString("hex")}.tmp`;
     try {
-      const { a, bucketId } = await requireBucketId();
-      const up = await fetch(`${a.apiUrl}/b2api/v3/b2_get_upload_url`, {
-        method: "POST",
-        headers: { Authorization: a.token, "Content-Type": "application/json" },
-        body: JSON.stringify({ bucketId }),
-      });
-      if (!up.ok) {
-        const txt = await up.text().catch(() => "");
-        deps.logger.warn("b2 get_upload_url failed", { status: up.status, body: txt.slice(0, 200) });
-        throw new AppError("STORAGE_UNAVAILABLE", "Gagal mendapatkan URL unggah B2.", 502);
-      }
-      const uj = (await up.json()) as { uploadUrl?: string; authorizationToken?: string };
-      if (!uj.uploadUrl || !uj.authorizationToken) throw new AppError("STORAGE_UNAVAILABLE", "Respons upload URL B2 tidak lengkap.", 502);
-      const sha1 = createHash("sha1").update(input.body).digest("hex");
-      const res = await fetch(uj.uploadUrl, {
-        method: "POST",
-        headers: {
-          Authorization: uj.authorizationToken,
-          "X-Bz-File-Name": encodeURIComponent(input.objectKey),
-          "Content-Type": input.contentType,
-          "Content-Length": String(input.contentLength),
-          "X-Bz-Content-Sha1": sha1,
-        },
-        body: new Uint8Array(input.body),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        deps.logger.warn("b2 put failed", { key: input.objectKey, status: res.status, body: txt.slice(0, 200) });
-        throw new AppError("STORAGE_UNAVAILABLE", "Gagal menyimpan file ke penyimpanan objek.", 502);
-      }
-      const pj = (await res.json()) as { fileId?: string };
-      return { checksum: sha1, fileId: pj.fileId ?? "" };
-    } catch (err) {
-      if (err instanceof AppError) throw err;
-      deps.logger.warn("b2 put failed", { key: input.objectKey, error: err instanceof Error ? err.message : String(err) });
-      throw new AppError("STORAGE_UNAVAILABLE", "Gagal menyimpan file ke penyimpanan objek.", 502);
+      await writeFile(temporary, input.body, { flag: "wx", mode: 0o600 });
+      await rename(temporary, target);
+    } finally {
+      await unlink(temporary).catch((err: NodeJS.ErrnoException) => { if (err.code !== "ENOENT") throw err; });
     }
+    return { checksum: createHash("sha256").update(input.body).digest("hex"), fileId: input.objectKey };
   }
-
-  /** Download via the bucket's private download endpoint with the auth token. */
   async function get(objectKey: string): Promise<{ body: Buffer; contentType?: string }> {
-    try {
-      const a = await authorize();
-      const res = await fetch(`${a.downloadUrl}/file/${deps.config.bucket}/${objectKey}`, {
-        headers: { Authorization: a.token },
-      });
-      if (!res.ok) {
-        deps.logger.warn("b2 get failed", { key: objectKey, status: res.status });
-        throw new AppError("STORAGE_UNAVAILABLE", "Gagal membaca file dari penyimpanan objek.", 502);
-      }
-      const buf = Buffer.from(await res.arrayBuffer());
-      return { body: buf, contentType: res.headers.get("content-type") ?? undefined };
-    } catch (err) {
-      if (err instanceof AppError) throw err;
-      deps.logger.warn("b2 get failed", { key: objectKey, error: err instanceof Error ? err.message : String(err) });
-      throw new AppError("STORAGE_UNAVAILABLE", "Gagal membaca file dari penyimpanan objek.", 502);
-    }
+    return { body: await readFile(pathFor(objectKey)) };
   }
-
-  async function remove(objectKey: string): Promise<void> {
-    try {
-      const a = await authorize();
-      // find file id by name (hide_versions: latest only)
-      const list = await fetch(`${a.apiUrl}/b2api/v3/b2_list_file_names`, {
-        method: "POST",
-        headers: { Authorization: a.token, "Content-Type": "application/json" },
-        body: JSON.stringify({ bucketId: (await requireBucketId()).bucketId, startFileName: objectKey, maxFileCount: 1 }),
-      });
-      if (!list.ok) throw new Error(`list ${list.status}`);
-      const lj = (await list.json()) as { files?: { fileName: string; fileId: string }[] };
-      const hit = lj.files?.find((f) => f.fileName === objectKey);
-      if (!hit) return; // already gone
-      const del = await fetch(`${a.apiUrl}/b2api/v3/b2_delete_file_version`, {
-        method: "POST",
-        headers: { Authorization: a.token, "Content-Type": "application/json" },
-        body: JSON.stringify({ fileName: hit.fileName, fileId: hit.fileId }),
-      });
-      if (!del.ok) throw new Error(`delete ${del.status}`);
-    } catch (err) {
-      // deletion failure is logged but non-fatal: orphans are re-swept later
-      deps.logger.warn("b2 delete failed (orphan possible)", { key: objectKey, error: err instanceof Error ? err.message : String(err) });
-    }
+  async function remove(objectKey: string) {
+    await unlink(pathFor(objectKey)).catch((err: NodeJS.ErrnoException) => { if (err.code !== "ENOENT") throw err; });
   }
-
   return { buildObjectKey, put, get, remove };
 }
-
 export type StorageService = ReturnType<typeof createStorageService>;

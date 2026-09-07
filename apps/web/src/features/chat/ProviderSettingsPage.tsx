@@ -4,12 +4,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Loader2, RefreshCw, Trash2 } from "lucide-react";
-import {
-  useProviderSettings,
-  useSaveProviderSettings,
-  useDeleteProviderSettings,
-  fetchProviderModels,
-} from "./chat-hooks";
+import { useProviderSettings, useSaveProviderSettings, useDeleteProviderSettings, fetchProviderModels, useRateLimitStatus } from "./chat-hooks";
+import { RateLimitStatusPanel } from "./RateLimitStatus";
 
 const KINDS = [
   { id: "gemini", label: "Google Gemini", hint: "Endpoint OpenAI-compatible resmi Google" },
@@ -27,6 +23,7 @@ export function ProviderSettingsPage() {
   const existing = useProviderSettings();
   const save = useSaveProviderSettings();
   const remove = useDeleteProviderSettings();
+  const rateLimits = useRateLimitStatus();
 
   const [kind, setKind] = useState<string>("gemini");
   const [baseUrl, setBaseUrl] = useState("");
@@ -227,6 +224,11 @@ export function ProviderSettingsPage() {
         Tanpa pengaturan tersimpan, chat memakai provider mock deterministik di server (untuk development).
         Saat pengaturan aktif, semua request chat memakai provider dan model pilihan Anda.
       </p>
+
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold">Status Rate Limit & Kuota</h3>
+        <RateLimitStatusPanel data={rateLimits.data} loading={rateLimits.isLoading} />
+      </div>
     </div>
   );
 }

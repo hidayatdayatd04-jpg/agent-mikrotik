@@ -1,21 +1,20 @@
 {
-  "name": "agent-mikrotik",
+  "name": "mikrotik-agent",
   "type": "module",
-  "private": true,
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n api,web -c blue,green \"bun run --cwd apps/api dev\" \"bun run --cwd apps/web dev\"",
-    "build": "bun run --cwd apps/web build && bun run --cwd apps/api build",
+    "dev": "concurrently --restart-tries -1 --restart-after 2000 -n api,web -c blue,green \"bun run --cwd apps/api dev\" \"bun run --cwd apps/web dev\"",
+    "build": "bun run --cwd apps/web build && bun tooling/build.ts",
     "typecheck": "tsc -b tsconfig.json",
     "lint": "eslint .",
-    "test": "bun test",
+    "test": "bun test apps/api packages",
     "test:ui": "bun run --cwd apps/web test",
     "test:e2e": "playwright test",
-    "db:generate": "bun run --cwd apps/api db:generate",
-    "db:migrate": "bun run --cwd apps/api db:migrate"
+    "start": "bun bin/mikrotik-agent.js run",
+    "prepack": "bun run build"
   },
   "devDependencies": {
     "@eslint/js": "9.36.0",
@@ -24,5 +23,29 @@
     "eslint": "9.36.0",
     "typescript": "5.9.2",
     "typescript-eslint": "8"
+  },
+  "version": "0.1.0",
+  "description": "Local MikroTik AI agent with a web UI and API powered by Bun",
+  "bin": {
+    "mikrotik-agent": "bin/mikrotik-agent.js"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.3.3"
+  },
+  "dependencies": {
+    "@hono/zod-validator": "0.7.4",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@tikoci/rosetta": "0.11.1",
+    "@usex/mikrotik-mcp": "5.6.0",
+    "drizzle-orm": "0.44.7",
+    "hono": "4.10.3",
+    "openai": "4",
+    "ssh2": "1.17.0",
+    "zod": "3.25.76"
   }
 }

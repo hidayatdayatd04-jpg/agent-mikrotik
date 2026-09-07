@@ -1,287 +1,149 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
+import { setCookie, deleteCookie, getCookie } from "hono/cookie";
+import { eq } from "drizzle-orm";
 import type { Env } from "../types";
-import { AppError } from "../lib/errors";
-import { getCookie } from "hono/cookie";
-import { SESSION_COOKIE } from "../middleware/session";
-import type { AuthService, EmailSender, SessionContext } from "../services/auth";
-import { OtpError } from "../services/otp-error";
-import { createRateLimiter } from "../services/auth-core";
+import type { Database } from "../db";
 import type { Logger } from "../lib/logger";
-import { timingSafeEqual } from "node:crypto";
+import { AppError } from "../lib/errors";
+import {
+  SESSION_COOKIE,
+  SESSION_TTL_MS,
+  createSession,
+  loginWithPassword,
+  revokeSession,
+  revokeAllForAccount,
+  revokeOtherSessions,
+  verifySessionToken,
+  changePassword,
+  ensureSeedAccount,
+} from "../services/auth";
+import { accounts, preferences } from "../db/schema";
+import { requireAuth } from "../middleware/session";
 
-const EmailSchema = z.string().email().max(320);
+const LoginSchema = z.object({
+  identifier: z.string().min(1, "Username atau email wajib diisi").max(256),
+  password: z.string().min(1, "Password wajib diisi").max(256),
+});
 
-export function createAuthRoutes(deps: {
-  auth: AuthService;
-  email: EmailSender;
-  logger: Logger;
-  otpSecret: string;
-  db: Parameters<typeof createRateLimiter>[0];
-  config: {
-    isProduction: boolean;
-    useMockOAuth: boolean;
-    useMockEmail: boolean;
-    trustedOrigins: string[];
-    APP_URL: string;
-    OTP_TTL_SECONDS: number;
-    OTP_RESEND_SECONDS: number;
-    OTP_MAX_ATTEMPTS: number;
-    SESSION_TTL_SECONDS: number;
-    GOOGLE_CLIENT_ID?: string;
-    GOOGLE_CLIENT_SECRET?: string;
-    GOOGLE_REDIRECT_URI: string;
-  };
-}) {
-  const routes = new Hono<Env>();
-  const limit = createRateLimiter(deps.db, deps.otpSecret);
+const ProfileSchema = z.object({
+  displayName: z.string().min(1).max(100).optional(),
+});
 
-  async function otpRateLimit(kind: string, key: string, cap: number, windowSeconds: number) {
-    const res = await limit(`${kind}:${key}`, cap, windowSeconds);
-    if (!res.allowed) {
-      throw new AppError("RATE_LIMITED", `Terlalu banyak permintaan. Coba lagi dalam ${res.retryAfterSeconds} detik.`, 429);
-    }
+const PasswordSchema = z.object({
+  oldPassword: z.string().min(1).max(256),
+  newPassword: z.string().min(8, "Password baru minimal 8 karakter").max(256),
+});
+
+function cookieSecure(c: { req: { url: string; header: (n: string) => string | undefined } }): boolean {
+  try {
+    const url = new URL(c.req.url);
+    if (url.protocol === "https:") return true;
+  } catch {
+    /* ignore */
   }
+  const forwarded = c.req.header("x-forwarded-proto");
+  return forwarded?.split(",")[0]?.trim() === "https";
+}
 
-  routes.post("/otp/request", zValidator("json", z.object({ email: EmailSchema })), async (c) => {
-    const cfg = c.get("config");
-    requireOrigin(c);
-    const { email } = c.req.valid("json");
+export function createAuthRoutes(deps: { db: Database; logger: Logger }) {
+  const routes = new Hono<Env>();
 
-    await otpRateLimit("otp-req-ip", clientIp(c), 10, 60 * 15);
-    await otpRateLimit("otp-req-email", email.toLowerCase(), 3, 60 * 15);
-
-    await deps.auth.requestOtp(email);
-    return c.json({ sent: true, mockDelivery: cfg.useMockEmail });
+  routes.post("/login", zValidator("json", LoginSchema), async (c) => {
+    const input = c.req.valid("json");
+    // Rate-limit key: client IP-ish + identifier bucket (Host header is loopback-only anyway).
+    const fwd = c.req.header("x-forwarded-for") ?? c.req.header("cf-connecting-ip") ?? "local";
+    const rateKey = `${fwd}|${input.identifier.trim().toLowerCase()}`;
+    await ensureSeedAccount(deps.db, deps.logger);
+    const account = await loginWithPassword(deps.db, input.identifier, input.password, rateKey);
+    const { token, expiresAt } = await createSession(deps.db, account.id);
+    const secure = cookieSecure(c);
+    setCookie(c, SESSION_COOKIE, token, {
+      httpOnly: true,
+      sameSite: "Lax",
+      path: "/",
+      expires: expiresAt,
+      secure,
+      maxAge: Math.floor(SESSION_TTL_MS / 1000),
+    });
+    return c.json({
+      profile: { id: account.id, username: account.username, displayName: account.displayName, loginAlias: account.loginAlias },
+    });
   });
 
-  routes.post("/otp/verify", zValidator("json", z.object({ email: EmailSchema, code: z.string().regex(/^\d{6}$/) })), async (c) => {
-    const cfg = c.get("config");
-    requireOrigin(c);
-    const { email, code } = c.req.valid("json");
-
-    await otpRateLimit("otp-verify-ip", clientIp(c), 20, 60 * 15);
-    await otpRateLimit("otp-verify-email", email.toLowerCase(), cfg.OTP_MAX_ATTEMPTS * 2, 60 * 15);
-
-    try {
-      const session = await deps.auth.verifyOtp(email, code);
-      setSessionCookie(c, session.sessionToken, {
-        secure: cfg.isProduction,
-        maxAge: cfg.SESSION_TTL_SECONDS,
-      });
-      return c.json({ user: publicUser(session) });
-    } catch (err) {
-      if (err instanceof OtpError) throw new AppError(err.code, err.message, 400);
-      throw err;
-    }
-  });
-
-  routes.get("/me", (c) => {
-    const session = requireSession(c);
-    return c.json({ user: publicUser(session) });
+  routes.get("/me", async (c) => {
+    const token = getCookie(c, SESSION_COOKIE) ?? "";
+    if (!token) throw new AppError("UNAUTHORIZED", "Belum login.", 401);
+    const rec = await verifySessionToken(deps.db, token);
+    if (!rec) throw new AppError("UNAUTHORIZED", "Session habis atau tidak valid.", 401);
+    const [pref] = await deps.db.select().from(preferences).where(eq(preferences.accountId, rec.account.id)).limit(1);
+    return c.json({
+      profile: {
+        id: rec.account.id,
+        username: rec.account.username,
+        displayName: rec.account.displayName,
+        loginAlias: rec.account.loginAlias,
+      },
+      preferences: pref
+        ? { theme: pref.theme, sidebarCollapsed: !!pref.sidebarCollapsed, autoCompact: !!pref.autoCompact, compactThreshold: pref.compactThreshold }
+        : null,
+    });
   });
 
   routes.post("/logout", async (c) => {
-    requireOrigin(c);
-    const session = requireSession(c);
-    await deps.auth.revokeSession(session.sessionId);
-    c.header("Set-Cookie", `${SESSION_COOKIE}=; Path=/; Max-Age=0`);
+    const token = getCookie(c, SESSION_COOKIE) ?? "";
+    if (token) {
+      const rec = await verifySessionToken(deps.db, token).catch(() => null);
+      if (rec) {
+        await revokeSession(deps.db, rec.sessionId);
+        // Controlled cleanup: mark this session's running agent runs as cancelled-requested
+        // so background workers stop; transaction settlement still follows real outcome.
+        try {
+          const { agentRuns } = await import("../db/schema");
+          const { eq: eqq, and: andd } = await import("drizzle-orm");
+          await deps.db
+            .update(agentRuns)
+            .set({ cancelRequested: true })
+            .where(andd(eqq(agentRuns.userId, rec.account.workspaceId), eqq(agentRuns.status, "running")));
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+    deleteCookie(c, SESSION_COOKIE, { path: "/" });
     return c.json({ ok: true });
   });
 
-  // --- Google OAuth (OIDC authorization-code flow) ---
-  routes.get("/google", async (c) => {
-    const cfg = c.get("config");
-    if (cfg.useMockOAuth) {
-      // Dev-only bypass: clearly labeled, refuses to run in production.
-      if (cfg.isProduction) throw new AppError("INTERNAL_ERROR", "Mock OAuth tidak tersedia di production.", 500);
-      const user = await deps.auth.findOrCreateUser("dev-google@localhost", {
-        verified: true,
-        name: "Dev Google User",
-      });
-      if (!user) throw new AppError("INTERNAL_ERROR", "Gagal membuat user dev.", 500);
-      const session = await deps.auth.createSession(user);
-      setSessionCookie(c, session.sessionToken, {
-        secure: cfg.isProduction,
-        maxAge: cfg.SESSION_TTL_SECONDS,
-      });
-      return c.redirect(cfg.APP_URL);
+  routes.patch("/profile", zValidator("json", ProfileSchema), async (c) => {
+    const { account } = requireAuth(c as never);
+    const input = c.req.valid("json");
+    if (input.displayName !== undefined) {
+      const name = input.displayName.trim();
+      if (!name) throw new AppError("VALIDATION_FAILED", "Display name tidak boleh kosong.", 422);
+      await deps.db.update(accounts).set({ displayName: name, updatedAt: new Date() }).where(eq(accounts.id, account.id));
     }
-    const state = crypto.randomUUID();
-    const nonce = crypto.randomUUID();
-    const params = new URLSearchParams({
-      client_id: cfg.GOOGLE_CLIENT_ID!,
-      redirect_uri: cfg.GOOGLE_REDIRECT_URI,
-      response_type: "code",
-      scope: "openid email profile",
-      state,
-      nonce,
+    const [row] = await deps.db.select().from(accounts).where(eq(accounts.id, account.id)).limit(1);
+    return c.json({
+      profile: { id: row!.id, username: row!.username, displayName: row!.displayName, loginAlias: row!.loginAlias },
     });
-    c.header(
-      "Set-Cookie",
-      serializeCookie("g_state", `${state}.${nonce}`, {
-        httpOnly: true,
-        sameSite: "Lax",
-        secure: cfg.isProduction,
-        path: "/",
-        maxAge: 600,
-      }),
-    );
-    return c.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
   });
 
-  routes.get("/callback/google", async (c) => {
-    const cfg = c.get("config");
-    if (cfg.useMockOAuth) return c.redirect(cfg.APP_URL);
-    const url = new URL(c.req.url);
-    const code = url.searchParams.get("code");
-    const state = url.searchParams.get("state");
-    const cookieState = getCookie(c, "g_state");
-    if (!code || !state || !cookieState) throw new AppError("AUTH_REQUIRED", "Callback tidak valid.", 400);
-    const [expectedState] = cookieState.split(".");
-    if (!expectedState || !constantTimeEq(state, expectedState)) {
-      throw new AppError("AUTH_REQUIRED", "State OAuth tidak cocok.", 400);
-    }
-
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: cfg.GOOGLE_CLIENT_ID!,
-        client_secret: cfg.GOOGLE_CLIENT_SECRET!,
-        code,
-        grant_type: "authorization_code",
-        redirect_uri: cfg.GOOGLE_REDIRECT_URI,
-      }),
-    });
-    if (!tokenRes.ok) throw new AppError("AUTH_REQUIRED", "Pertukaran token Google gagal.", 400);
-    const tokens = (await tokenRes.json()) as { id_token: string };
-
-    const claims = decodeJwtPayload(tokens.id_token);
-    const now = Math.floor(Date.now() / 1000);
-    if (claims.iss !== "https://accounts.google.com" && claims.iss !== "accounts.google.com") {
-      throw new AppError("AUTH_REQUIRED", "Issuer token tidak valid.", 400);
-    }
-    if (claims.aud !== cfg.GOOGLE_CLIENT_ID) throw new AppError("AUTH_REQUIRED", "Audience token tidak cocok.", 400);
-    if (typeof claims.exp === "number" && claims.exp < now) throw new AppError("AUTH_REQUIRED", "Token kedaluwarsa.", 400);
-    if (claims.email_verified !== true) throw new AppError("AUTH_REQUIRED", "Email Google belum terverifikasi.", 400);
-
-    const email = String(claims.email).toLowerCase();
-    let user = await deps.auth.findUserByGoogleSubject(String(claims.sub));
-    if (!user) {
-      const created = await deps.auth.findOrCreateUser(email, {
-        verified: true,
-        name: String(claims.name ?? email.split("@")[0] ?? email),
-        avatarUrl: typeof claims.picture === "string" ? claims.picture : null,
-      });
-      if (!created) throw new AppError("AUTH_REQUIRED", "Gagal menyiapkan akun Google.", 500);
-      user = created;
-      await deps.auth.linkGoogleIdentity(user.id, String(claims.sub));
-    }
-    const session = await deps.auth.createSession(user);
-    setSessionCookie(c, session.sessionToken, {
-      secure: cfg.isProduction,
-      maxAge: cfg.SESSION_TTL_SECONDS,
-    });
-    c.header("Set-Cookie", "g_state=; Path=/; Max-Age=0");
-    return c.redirect(cfg.APP_URL);
+  routes.post("/password", zValidator("json", PasswordSchema), async (c) => {
+    const { account, sessionId } = requireAuth(c as never);
+    const input = c.req.valid("json");
+    await changePassword(deps.db, account.id, input.oldPassword, input.newPassword);
+    // Revoke other sessions; keep current.
+    await revokeOtherSessions(deps.db, account.id, sessionId);
+    return c.json({ ok: true });
   });
 
-  function requireSession(c: { get: (k: "session") => unknown }) {
-    const s = c.get("session");
-    if (!s) throw new AppError("AUTH_REQUIRED", "Silakan masuk terlebih dahulu.", 401);
-    return s as SessionContext;
-  }
-
-  function requireOrigin(c: {
-    req: { header: (n: string) => string | undefined };
-    get: (k: "config") => { trustedOrigins: string[] };
-  }) {
-    const origin = c.req.header("Origin");
-    const cfg = c.get("config");
-    if (origin !== undefined && !cfg.trustedOrigins.includes(origin)) {
-      throw new AppError("FORBIDDEN", "Origin tidak diizinkan.", 403);
-    }
-  }
-
-  function clientIp(c: { req: { header: (n: string) => string | undefined } }) {
-    return c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
-  }
+  routes.post("/logout-all", async (c) => {
+    const { account } = requireAuth(c as never);
+    await revokeAllForAccount(deps.db, account.id);
+    deleteCookie(c, SESSION_COOKIE, { path: "/" });
+    return c.json({ ok: true });
+  });
 
   return routes;
-}
-
-function setSessionCookie(
-  c: { header: (n: string, v: string) => void },
-  token: string,
-  opts: { secure: boolean; maxAge: number },
-) {
-  c.header(
-    "Set-Cookie",
-    serializeCookie(SESSION_COOKIE, token, {
-      httpOnly: true,
-      sameSite: "Lax",
-      secure: opts.secure,
-      path: "/",
-      maxAge: opts.maxAge,
-    }),
-  );
-}
-
-function constantTimeEq(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
-  if (bufA.length !== bufB.length) return false;
-  // timing-safe compare
-  return timingSafeEqual(bufA, bufB);
-}
-
-function publicUser(s: {
-  userId: string;
-  email: string;
-  name: string;
-  avatarUrl: string | null;
-  emailVerified: boolean;
-}) {
-  return {
-    id: s.userId,
-    email: s.email,
-    name: s.name,
-    avatarUrl: s.avatarUrl,
-    emailVerified: s.emailVerified,
-  };
-}
-
-function serializeCookie(name: string, value: string, opts: Record<string, unknown>): string {
-  const parts = [`${name}=${encodeURIComponent(value)}`, `Path=${opts.path ?? "/"}`];
-  if (opts.httpOnly) parts.push("HttpOnly");
-  if (opts.sameSite) parts.push(`SameSite=${opts.sameSite}`);
-  if (opts.secure) parts.push("Secure");
-  if (typeof opts.maxAge === "number") parts.push(`Max-Age=${opts.maxAge}`);
-  return parts.join("; ");
-}
-
-interface JwtPayload {
-  iss?: string;
-  aud?: string;
-  sub?: string;
-  exp?: number;
-  email?: string;
-  email_verified?: boolean;
-  name?: string;
-  picture?: string;
-  [k: string]: unknown;
-}
-
-/**
- * Decode payload of the id_token returned by Google's token endpoint over TLS.
- * Signature authenticity comes from the server-to-server code exchange; issuer,
- * audience, and expiry are validated explicitly above.
- */
-function decodeJwtPayload(jwt: string): JwtPayload {
-  const part = jwt.split(".")[1];
-  if (!part) throw new AppError("AUTH_REQUIRED", "Token Google malformed.", 400);
-  const json = Buffer.from(part, "base64url").toString("utf8");
-  return JSON.parse(json) as JwtPayload;
 }

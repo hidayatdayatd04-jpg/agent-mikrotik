@@ -6,7 +6,7 @@ export interface AppServices {
 
 export async function checkDatabase(db: Database): Promise<"ok" | "error"> {
   try {
-    await db.execute("select 1");
+    await db.run("select 1");
     return "ok";
   } catch {
     return "error";

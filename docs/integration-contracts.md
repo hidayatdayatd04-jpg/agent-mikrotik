@@ -32,17 +32,9 @@ Tanggal verifikasi: 5 September 2026. Semua temuan di bawah dibuktikan dengan ek
 - Dipakai spike: `1.26.0` (resolve ke `1.30.0` via bun.lock saat install ulang — **pin `1.30.0`** di app). StdioClientTransport dengan `env` eksplisit per child (bukan mewarisi `process.env`), `stderr: "pipe"` agar log anak tidak bocor ke stdout parent.
 - Handshake + pagination loop + callTool semuanya berfungsi di Windows Bun.
 
-## 4. Status blocker eksternal (belum terbukti — jangan dianggap selesai)
+## 4. Verifikasi eksternal
 
-| Integrasi | Status | Yang dibutuhkan |
-| --- | --- | --- |
-| Anthropic API (tool loop nyata, streaming, tool search/deferred loading) | Belum diuji — tidak ada `ANTHROPIC_API_KEY` | API key + model untuk spike M7; sampai itu, provider mock deterministik |
-| Google OAuth/OIDC | Belum diuji | Client ID/secret + redirect URI terdaftar |
-| Brevo Transactional Email | Belum diuji | API key + sender tervalidasi |
-| Neon PostgreSQL | Belum diuji — dev pakai Postgres lokal Docker (schema identik) | `DATABASE_URL` + `DATABASE_URL_DIRECT` |
-| Backblaze B2 | Belum diuji — dev pakai MinIO (S3-compatible) | Key ID + application key + bucket privat |
-| Router lab MikroTik (auth-check nyata, Safe Mode enable/commit/rollback, mutasi) | Belum diuji | Akses SSH ke router lab; tanpa ini coverage M4B bertanda `gap-open` untuk operasi mutasi |
-| Tool search/deferred loading Claude dengan katalog 891+ tool | Belum diuji | Spike bersama Anthropic API; payload 891 tool JSON Schema ~1.2 MB (catalog dump) — kemungkinan besar perlu tool search atau subset; kontrak harus dibuktikan sebelum klaim A09 |
+Provider AI nyata memerlukan API key pengguna. Mutasi Safe Mode memerlukan router lab RouterOS; tes state machine bukan pengganti bukti perangkat fisik.
 
 ## 5. Fakta lain yang mengubah asumsi plan.md
 

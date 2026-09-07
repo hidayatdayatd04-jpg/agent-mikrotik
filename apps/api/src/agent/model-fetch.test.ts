@@ -25,6 +25,13 @@ function stubFetch(handler: (url: string, init: RequestInit) => Response | Promi
 }
 
 describe("fetchProviderModels", () => {
+  test("selected model beyond the list limit retains real provider context length", async () => {
+    const data = Array.from({ length: 310 }, (_, i) => ({ id: `model-${i}`, context_length: 32768 + i }));
+    stubFetch(() => Response.json({ data }));
+    const result = await fetchProviderModels({ kind: "openrouter", apiKey: "test", logger: silentLogger, selectedModel: "model-309" });
+    expect(result.models).toEqual([{ id: "model-309", label: undefined, contextWindow: 33077, contextBasis: "total" }]);
+  });
+
   test("gemini default base URL uses native /v1beta/models with x-goog-api-key", async () => {
     let seenUrl = "";
     let seenHeader = "";

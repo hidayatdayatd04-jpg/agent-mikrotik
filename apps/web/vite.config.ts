@@ -15,8 +15,21 @@ export default defineConfig({
     port: 3000,
     proxy: {
       "/api": {
-        target: "http://localhost:3001",
+        target: "http://127.0.0.1:3001",
         changeOrigin: false,
+        configure(proxy) {
+          proxy.on("error", (_err, _req, res) => {
+            // WebSocket errors receive a Socket instead of a ServerResponse.
+            if (!("writeHead" in res) || res.headersSent || res.writableEnded) return;
+            res.writeHead(502, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({
+              error: {
+                code: "BACKEND_UNAVAILABLE",
+                message: "Backend API (port 3001) tidak aktif atau baru restart. Tunggu sebentar lalu coba lagi.",
+              },
+            }));
+          });
+        },
       },
     },
   },

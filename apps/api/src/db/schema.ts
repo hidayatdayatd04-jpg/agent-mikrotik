@@ -1,126 +1,48 @@
-import {
-  pgTable,
-  uuid,
-  text,
-  varchar,
-  timestamp,
-  boolean,
-  integer,
-  bigint,
-  jsonb,
-  index,
-  uniqueIndex,
-  primaryKey,
-} from "drizzle-orm/pg-core";
+import { sqliteTable, text, integer, index, uniqueIndex, primaryKey } from "drizzle-orm/sqlite-core";
 
-export const users = pgTable("users", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  email: varchar("email", { length: 320 }).notNull().unique(),
-  name: varchar("name", { length: 200 }).notNull(),
-  avatarUrl: text("avatar_url"),
-  emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+export const workspaces = sqliteTable("workspaces", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  name: text("name").notNull().default("Lokal"),
 });
 
-export const authIdentities = pgTable(
-  "auth_identities",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    provider: varchar("provider", { length: 32 }).notNull(),
-    subject: varchar("subject", { length: 255 }).notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex("auth_identities_provider_subject_idx").on(t.provider, t.subject)],
-);
-
-export const sessions = pgTable(
-  "sessions",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    tokenHash: varchar("token_hash", { length: 128 }).notNull(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    revokedAt: timestamp("revoked_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    uniqueIndex("sessions_token_hash_idx").on(t.tokenHash),
-    index("sessions_user_idx").on(t.userId),
-    index("sessions_expiry_idx").on(t.expiresAt),
-  ],
-);
-
-export const otpChallenges = pgTable(
-  "otp_challenges",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    email: varchar("email", { length: 320 }).notNull(),
-    purpose: varchar("purpose", { length: 32 }).notNull().default("login"),
-    digest: varchar("digest", { length: 128 }).notNull(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    attempts: integer("attempts").notNull().default(0),
-    consumedAt: timestamp("consumed_at", { withTimezone: true }),
-    deliveryStatus: varchar("delivery_status", { length: 32 }).notNull().default("pending"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [index("otp_challenges_email_idx").on(t.email, t.createdAt)],
-);
-
-export const rateLimitBuckets = pgTable(
-  "rate_limit_buckets",
-  {
-    keyHash: varchar("key_hash", { length: 128 }).notNull(),
-    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
-    count: integer("count").notNull().default(0),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.keyHash, t.windowStart] })],
-);
-
-export const routerConnections = pgTable(
+export const routerConnections = sqliteTable(
   "router_connections",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
       .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    label: varchar("label", { length: 200 }).notNull(),
-    host: varchar("host", { length: 255 }).notNull(),
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    label: text("label").notNull(),
+    host: text("host").notNull(),
     port: integer("port").notNull().default(22),
-    username: varchar("username", { length: 128 }).notNull(),
+    username: text("username").notNull(),
     passwordCiphertext: text("password_ciphertext"),
-    passwordNonce: varchar("password_nonce", { length: 64 }),
-    passwordAuthTag: varchar("password_auth_tag", { length: 64 }),
+    passwordNonce: text("password_nonce"),
+    passwordAuthTag: text("password_auth_tag"),
     keyVersion: integer("key_version").notNull().default(1),
-    hostKeyFingerprint: varchar("host_key_fingerprint", { length: 128 }),
-    routerIdentity: varchar("router_identity", { length: 255 }),
-    status: varchar("status", { length: 32 }).notNull().default("unverified"),
-    lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    hostKeyFingerprint: text("host_key_fingerprint"),
+    routerIdentity: text("router_identity"),
+    status: text("status").notNull().default("unverified"),
+    lastVerifiedAt: integer("last_verified_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [index("router_connections_user_idx").on(t.userId)],
 );
 
-export const connectionPermissions = pgTable(
+export const connectionPermissions = sqliteTable(
   "connection_permissions",
   {
-    userId: uuid("user_id")
+    userId: text("user_id")
       .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    connectionId: uuid("connection_id")
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    connectionId: text("connection_id")
       .notNull()
       .references(() => routerConnections.id, { onDelete: "cascade" }),
-    writeEnabled: boolean("write_enabled").notNull().default(false),
+    writeEnabled: integer("write_enabled", { mode: "boolean" }).notNull().default(false),
     version: integer("version").notNull().default(1),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [
     primaryKey({ columns: [t.userId, t.connectionId] }),
@@ -128,105 +50,183 @@ export const connectionPermissions = pgTable(
   ],
 );
 
-export const aiProviderSettings = pgTable(
+export const aiProviderSettings = sqliteTable(
   "ai_provider_settings",
   {
-    userId: uuid("user_id")
+    userId: text("user_id")
       .primaryKey()
-      .references(() => users.id, { onDelete: "cascade" }),
-    kind: varchar("kind", { length: 32 }).notNull(), // gemini | openrouter | custom
-    baseUrl: varchar("base_url", { length: 512 }).notNull(),
-    model: varchar("model", { length: 255 }).notNull(),
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(), // gemini | openrouter | custom
+    baseUrl: text("base_url").notNull(),
+    model: text("model").notNull(),
     // apiKey sealed with the same AES-256-GCM keyRing as router credentials
     apiKeyCiphertext: text("api_key_ciphertext").notNull(),
-    apiKeyNonce: varchar("api_key_nonce", { length: 64 }).notNull(),
-    apiKeyAuthTag: varchar("api_key_auth_tag", { length: 64 }).notNull(),
+    apiKeyNonce: text("api_key_nonce").notNull(),
+    apiKeyAuthTag: text("api_key_auth_tag").notNull(),
     keyVersion: integer("key_version").notNull().default(1),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
   },
 );
 
-export const conversations = pgTable(
+export const aiProviders = sqliteTable(
+  "ai_providers",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(), // gemini | openrouter | custom
+    name: text("name").notNull(),
+    baseUrl: text("base_url").notNull(),
+    apiKeyCiphertext: text("api_key_ciphertext").notNull(),
+    apiKeyNonce: text("api_key_nonce").notNull(),
+    apiKeyAuthTag: text("api_key_auth_tag").notNull(),
+    keyVersion: integer("key_version").notNull().default(1),
+    models: text("models", { mode: "json" }).notNull().$defaultFn(() => []),
+    modelLimits: text("model_limits", { mode: "json" }).$type<Record<string, import("@shared/index").ModelLimitStatus>>(),
+    activeModel: text("active_model").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+  (t) => [index("ai_providers_user_idx").on(t.userId)],
+);
+
+export const accounts = sqliteTable(
+  "accounts",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    username: text("username").notNull().unique(),
+    loginAlias: text("login_alias").unique(),
+    displayName: text("display_name").notNull(),
+    passwordHash: text("password_hash").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+  (t) => [index("accounts_workspace_idx").on(t.workspaceId)],
+);
+
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tokenHash: text("token_hash").notNull().unique(),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+    lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+  (t) => [index("sessions_account_idx").on(t.accountId, t.expiresAt)],
+);
+
+export const preferences = sqliteTable(
+  "preferences",
+  {
+    accountId: text("account_id")
+      .primaryKey()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    theme: text("theme").notNull().default("system"),
+    sidebarCollapsed: integer("sidebar_collapsed", { mode: "boolean" }).notNull().default(false),
+    autoCompact: integer("auto_compact", { mode: "boolean" }).notNull().default(true),
+    compactThreshold: integer("compact_threshold").notNull().default(80),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+);
+
+export const conversations = sqliteTable(
   "conversations",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
       .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    title: varchar("title", { length: 255 }).notNull().default("Percakapan baru"),
-    activeConnectionId: uuid("active_connection_id").references(() => routerConnections.id, {
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default("Percakapan baru"),
+    activeConnectionId: text("active_connection_id").references(() => routerConnections.id, {
       onDelete: "set null",
     }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    pinnedAt: integer("pinned_at", { mode: "timestamp_ms" }),
+    archivedAt: integer("archived_at", { mode: "timestamp_ms" }),
+    revision: integer("revision").notNull().default(1),
   },
-  (t) => [index("conversations_user_idx").on(t.userId, t.updatedAt)],
+  (t) => [
+    index("conversations_user_idx").on(t.userId, t.updatedAt),
+    index("conversations_user_archived_idx").on(t.userId, t.archivedAt),
+  ],
 );
 
-export const messages = pgTable(
+export const messages = sqliteTable(
   "messages",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    conversationId: uuid("conversation_id")
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    conversationId: text("conversation_id")
       .notNull()
       .references(() => conversations.id, { onDelete: "cascade" }),
-    role: varchar("role", { length: 16 }).notNull(),
-    content: jsonb("content").notNull(),
-    status: varchar("status", { length: 32 }).notNull().default("complete"),
-    seq: bigint("seq", { mode: "number" }).notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    role: text("role").notNull(),
+    content: text("content", { mode: "json" }).notNull(),
+    status: text("status").notNull().default("complete"),
+    seq: integer("seq").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [
     index("messages_conversation_seq_idx").on(t.conversationId, t.seq),
   ],
 );
 
-export const attachments = pgTable(
+export const attachments = sqliteTable(
   "attachments",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
       .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    conversationId: uuid("conversation_id").references(() => conversations.id, {
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    conversationId: text("conversation_id").references(() => conversations.id, {
       onDelete: "cascade",
     }),
-    messageId: uuid("message_id").references(() => messages.id, { onDelete: "set null" }),
-    objectKey: varchar("object_key", { length: 512 }).notNull().unique(),
-    originalName: varchar("original_name", { length: 255 }).notNull(),
-    contentType: varchar("content_type", { length: 128 }).notNull(),
-    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
-    checksum: varchar("checksum", { length: 128 }),
-    status: varchar("status", { length: 32 }).notNull().default("uploading"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    messageId: text("message_id").references(() => messages.id, { onDelete: "set null" }),
+    objectKey: text("object_key").notNull().unique(),
+    originalName: text("original_name").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    checksum: text("checksum"),
+    status: text("status").notNull().default("uploading"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [index("attachments_user_idx").on(t.userId, t.createdAt)],
 );
 
-export const agentRuns = pgTable(
+export const agentRuns = sqliteTable(
   "agent_runs",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
       .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    conversationId: uuid("conversation_id")
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    conversationId: text("conversation_id")
       .notNull()
       .references(() => conversations.id, { onDelete: "cascade" }),
-    connectionId: uuid("connection_id").references(() => routerConnections.id, {
+    connectionId: text("connection_id").references(() => routerConnections.id, {
       onDelete: "set null",
     }),
-    idempotencyKey: varchar("idempotency_key", { length: 128 }),
-    status: varchar("status", { length: 32 }).notNull().default("queued"),
-    model: varchar("model", { length: 128 }),
-    usage: jsonb("usage"),
-    startedAt: timestamp("started_at", { withTimezone: true }),
-    endedAt: timestamp("ended_at", { withTimezone: true }),
-    cancelRequested: boolean("cancel_requested").notNull().default(false),
+    idempotencyKey: text("idempotency_key"),
+    status: text("status").notNull().default("queued"),
+    model: text("model"),
+    usage: text("usage", { mode: "json" }),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    endedAt: integer("ended_at", { mode: "timestamp_ms" }),
+    cancelRequested: integer("cancel_requested", { mode: "boolean" }).notNull().default(false),
     policyVersion: integer("policy_version").notNull().default(1),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [
     uniqueIndex("agent_runs_idempotency_idx").on(t.conversationId, t.idempotencyKey),
@@ -234,59 +234,168 @@ export const agentRuns = pgTable(
   ],
 );
 
-export const toolExecutions = pgTable(
+export const toolExecutions = sqliteTable(
   "tool_executions",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    runId: uuid("run_id")
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    runId: text("run_id")
       .notNull()
       .references(() => agentRuns.id, { onDelete: "cascade" }),
-    toolCallId: varchar("tool_call_id", { length: 128 }).notNull(),
-    toolName: varchar("tool_name", { length: 255 }).notNull(),
-    risk: varchar("risk", { length: 32 }).notNull(),
-    sanitizedInput: jsonb("sanitized_input"),
+    toolCallId: text("tool_call_id").notNull(),
+    toolName: text("tool_name").notNull(),
+    risk: text("risk").notNull(),
+    sanitizedInput: text("sanitized_input", { mode: "json" }),
     resultSummary: text("result_summary"),
-    status: varchar("status", { length: 32 }).notNull(),
+    status: text("status").notNull(),
     durationMs: integer("duration_ms"),
-    errorCode: varchar("error_code", { length: 64 }),
-    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    errorCode: text("error_code"),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [uniqueIndex("tool_executions_call_idx").on(t.runId, t.toolCallId)],
 );
 
-export const changeTransactions = pgTable(
+export const changeTransactions = sqliteTable(
   "change_transactions",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    connectionId: uuid("connection_id")
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    connectionId: text("connection_id")
       .notNull()
       .references(() => routerConnections.id, { onDelete: "cascade" }),
-    routerIdentity: varchar("router_identity", { length: 255 }),
-    runId: uuid("run_id").references(() => agentRuns.id, { onDelete: "set null" }),
-    state: varchar("state", { length: 32 }).notNull().default("preparing"),
-    lockOwner: varchar("lock_owner", { length: 128 }),
-    verification: jsonb("verification"),
-    outcome: varchar("outcome", { length: 32 }),
-    recoveryMetadata: jsonb("recovery_metadata"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    routerIdentity: text("router_identity"),
+    runId: text("run_id").references(() => agentRuns.id, { onDelete: "set null" }),
+    state: text("state").notNull().default("preparing"),
+    lockOwner: text("lock_owner"),
+    verification: text("verification", { mode: "json" }),
+    outcome: text("outcome"),
+    recoveryMetadata: text("recovery_metadata", { mode: "json" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [index("change_transactions_conn_idx").on(t.connectionId, t.state)],
 );
 
-export const auditEvents = pgTable(
+export const auditEvents = sqliteTable(
   "audit_events",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
-    action: varchar("action", { length: 128 }).notNull(),
-    connectionId: uuid("connection_id"),
-    runId: uuid("run_id"),
-    metadata: jsonb("metadata"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id").references(() => workspaces.id, { onDelete: "set null" }),
+    action: text("action").notNull(),
+    connectionId: text("connection_id"),
+    runId: text("run_id"),
+    metadata: text("metadata", { mode: "json" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [
     index("audit_events_user_time_idx").on(t.userId, t.createdAt),
     index("audit_events_connection_time_idx").on(t.connectionId, t.createdAt),
   ],
+);
+
+export const conversationSummaries = sqliteTable(
+  "conversation_summaries",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    throughSeq: integer("through_seq").notNull(),
+    sourceRevision: integer("source_revision").notNull().default(1),
+    sourceHash: text("source_hash"),
+    summary: text("summary").notNull(),
+    model: text("model"),
+    provider: text("provider"),
+    usage: text("usage", { mode: "json" }),
+    tokenBefore: integer("token_before"),
+    tokenAfter: integer("token_after"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+  (t) => [
+    uniqueIndex("conversation_summaries_version_idx").on(t.conversationId, t.version),
+    index("conversation_summaries_conv_idx").on(t.conversationId, t.throughSeq),
+  ],
+);
+
+export const compactionJobs = sqliteTable(
+  "compaction_jobs",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    sourceRevision: integer("source_revision").notNull().default(1),
+    status: text("status").notNull().default("queued"),
+    reason: text("reason").notNull().default("manual"),
+    summaryVersion: integer("summary_version"),
+    error: text("error"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+  (t) => [index("compaction_jobs_conv_idx").on(t.conversationId, t.status)],
+);
+
+export const activityEvents = sqliteTable(
+  "activity_events",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => agentRuns.id, { onDelete: "cascade" }),
+    activityId: text("activity_id").notNull(),
+    parentId: text("parent_id"),
+    seq: integer("seq").notNull(),
+    type: text("type").notNull(),
+    actor: text("actor").notNull().default("system"),
+    payload: text("payload", { mode: "json" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+  (t) => [
+    index("activity_events_conv_seq_idx").on(t.conversationId, t.seq),
+    index("activity_events_run_seq_idx").on(t.runId, t.seq),
+    index("activity_events_conv_type_idx").on(t.conversationId, t.type),
+  ],
+);
+
+export const terminalSessions = sqliteTable(
+  "terminal_sessions",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    connectionId: text("connection_id")
+      .notNull()
+      .references(() => routerConnections.id, { onDelete: "cascade" }),
+    conversationId: text("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
+    actor: text("actor").notNull().default("user"),
+    status: text("status").notNull().default("open"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    closedAt: integer("closed_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [
+    index("terminal_sessions_user_idx").on(t.userId, t.status),
+    index("terminal_sessions_conn_idx").on(t.connectionId, t.status),
+  ],
+);
+
+export const terminalCommands = sqliteTable(
+  "terminal_commands",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => terminalSessions.id, { onDelete: "cascade" }),
+    command: text("command").notNull(),
+    status: text("status").notNull().default("queued"),
+    transactionId: text("transaction_id").references(() => changeTransactions.id, { onDelete: "set null" }),
+    exitCode: integer("exit_code"),
+    durationMs: integer("duration_ms"),
+    outputPreview: text("output_preview").notNull().default(""),
+    truncated: integer("truncated", { mode: "boolean" }).notNull().default(false),
+    errorCode: text("error_code"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    endedAt: integer("ended_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [index("terminal_commands_session_idx").on(t.sessionId, t.createdAt)],
 );

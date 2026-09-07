@@ -70,3 +70,25 @@ describe("detectContentKind", () => {
     expect(detectContentKind({ mimeType: "text/plain", originalName: "empty.txt", head: Buffer.alloc(0) })).toEqual({ ok: true, kind: "text" });
   });
 });
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createStorageService } from "./storage";
+
+test("local attachments persist and reject traversal; deletion is idempotent", async () => {
+  const folder = mkdtempSync(join(tmpdir(), "mikrotik-files-test-"));
+  try {
+    const storage = createStorageService({ directory: folder });
+    const key = storage.buildObjectKey("local", "conversation", "rsc");
+    const body = Buffer.from("/system identity print");
+    await storage.put({ objectKey: key, body, contentType: "text/plain", contentLength: body.length });
+    const reopened = createStorageService({ directory: folder });
+    expect((await reopened.get(key)).body).toEqual(body);
+    for (const key of ["../secret", "C:/secret", "attachments/local/../secret", "attachments\\local\\secret"]) {
+      await expect(reopened.get(key)).rejects.toThrow("Object key");
+    }
+    await reopened.remove(key);
+    await reopened.remove(key);
+    await expect(reopened.get(key)).rejects.toThrow();
+  } finally { rmSync(folder, { recursive: true, force: true }); }
+});

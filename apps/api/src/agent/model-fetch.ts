@@ -14,6 +14,8 @@ import { defaultBaseUrl, type ProviderKind } from "./provider-settings";
 export interface FetchedModel {
   id: string;
   label?: string;
+  contextWindow?: number;
+  contextBasis?: "input" | "total";
 }
 
 const FETCH_TIMEOUT_MS = 12_000;
@@ -24,6 +26,7 @@ export async function fetchProviderModels(input: {
   baseUrl?: string;
   apiKey: string;
   logger: Logger;
+  selectedModel?: string;
 }): Promise<{ models: FetchedModel[]; source: string }> {
   const base = (input.baseUrl?.trim() || defaultBaseUrl(input.kind)).replace(/\/+$/, "");
   if (!base) throw new AppError("VALIDATION_FAILED", "Base URL wajib untuk provider custom.", 422);
@@ -31,7 +34,7 @@ export async function fetchProviderModels(input: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    if (input.kind === "gemini" && !input.baseUrl) {
+    if (input.kind === "gemini" && (!input.baseUrl || base === defaultBaseUrl("gemini"))) {
       // native Google endpoint when using the default base URL
       const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=${MAX_MODELS}`;
       const res = await fetch(url, {
@@ -41,14 +44,15 @@ export async function fetchProviderModels(input: {
       if (!res.ok) {
         throw await providerError(res, "Gemini");
       }
-      const data = (await res.json()) as { models?: { name?: string; displayName?: string; supportedGenerationMethods?: string[] }[] };
+      const data = (await res.json()) as { models?: { name?: string; displayName?: string; inputTokenLimit?: number; supportedGenerationMethods?: string[] }[] };
       const models = (data.models ?? [])
         .filter((m) => (m.supportedGenerationMethods ?? []).includes("generateContent"))
         .map((m) => ({
           id: (m.name ?? "").replace(/^models\//, ""),
           label: m.displayName,
+          ...(validLimit(m.inputTokenLimit) ? { contextWindow: m.inputTokenLimit, contextBasis: "input" as const } : {}),
         }))
-        .filter((m) => m.id)
+        .filter((m) => m.id && (!input.selectedModel || m.id === input.selectedModel))
         .slice(0, MAX_MODELS);
       return { models, source: "gemini:/v1beta/models" };
     }
@@ -61,10 +65,10 @@ export async function fetchProviderModels(input: {
     if (!res.ok) {
       throw await providerError(res, input.kind === "openrouter" ? "OpenRouter" : "Provider");
     }
-    const data = (await res.json()) as { data?: { id?: string; name?: string }[] };
+    const data = (await res.json()) as { data?: { id?: string; name?: string; context_length?: number }[] };
     const models = (data.data ?? [])
-      .map((m) => ({ id: m.id ?? "", label: m.name }))
-      .filter((m) => m.id)
+      .map((m) => ({ id: m.id ?? "", label: m.name, ...(validLimit(m.context_length) ? { contextWindow: m.context_length, contextBasis: "total" as const } : {}) }))
+      .filter((m) => m.id && (!input.selectedModel || m.id === input.selectedModel))
       .slice(0, MAX_MODELS);
     return { models, source: `${base}/models` };
   } catch (err) {
@@ -77,6 +81,10 @@ export async function fetchProviderModels(input: {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function validLimit(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 async function providerError(res: Response, who: string): Promise<AppError> {

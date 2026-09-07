@@ -1,13 +1,13 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { eq } from "drizzle-orm";
 import { createDb, type Database } from "../db";
-import { routerConnections, users } from "../db/schema";
+import { routerConnections, workspaces } from "../db/schema";
 import { createConnectorService } from "./connector";
 import { createTargetPolicy } from "./target-policy";
 import { envKeyRing } from "../lib/crypto";
 import type { SshProbeOptions, SshProbeResult } from "./ssh-probe";
 
-const dbUrl = process.env.DATABASE_URL ?? "postgres://dev:dev@localhost:5432/agent_mikrotik";
+const dbUrl = ":memory:";
 
 let db: Database;
 let userId: string | null = null;
@@ -30,7 +30,7 @@ function makeProbe(results: Record<string, SshProbeResult>) {
 const keyRing = envKeyRing({ 1: Buffer.alloc(32, 7).toString("base64") }, 1);
 const staticDns = (map: Record<string, string[]>) => async (h: string) => map[h] ?? [];
 
-describe("connector service (integration, local postgres, stubbed probe)", () => {
+describe("connector service (integration, SQLite, stubbed probe)", () => {
   const probe = makeProbe({
     "192.168.88.10": { ok: false, kind: "auth-failed", fingerprint: null, routerIdentity: null, message: "Autentikasi SSH gagal (username/password salah)." },
     "10.0.0.5": { ok: false, kind: "unreachable", fingerprint: null, routerIdentity: null, message: "Host tidak terjangkau: down" },
@@ -39,17 +39,16 @@ describe("connector service (integration, local postgres, stubbed probe)", () =>
   beforeAll(async () => {
     try {
       db = createDb(dbUrl);
-      await db.execute("select 1");
+      await db.run("select 1");
     } catch {
-      console.log("no local postgres; skipping connector integration tests");
-      return;
+      throw new Error("SQLite test setup failed");
     }
-    const [u] = await db.insert(users).values({ email: `connector-test-${Date.now()}@example.com`, name: "Connector Test" }).returning();
+    const [u] = await db.insert(workspaces).values({ name: "Connector Test" }).returning();
     userId = u!.id;
   });
 
   afterAll(async () => {
-    if (userId) await db.delete(users).where(eq(users.id, userId));
+    if (userId) await db.delete(workspaces).where(eq(workspaces.id, userId));
   });
 
   function makeService() {

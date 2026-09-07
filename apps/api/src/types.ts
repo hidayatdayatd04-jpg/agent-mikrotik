@@ -1,8 +1,16 @@
 import type { Config } from "./lib/config";
 import type { Logger } from "./lib/logger";
 import type { Database } from "./db";
-import type { SessionContext } from "./services/auth";
+import type { WorkspaceContext } from "./lib/workspace";
 import type { PolicyDispatcher } from "./policies/dispatcher";
+
+export interface AccountContext {
+  id: string;
+  workspaceId: string;
+  username: string;
+  displayName: string;
+  loginAlias: string | null;
+}
 
 export interface Env {
   Variables: {
@@ -10,7 +18,9 @@ export interface Env {
     config: Config;
     logger: Logger;
     db: Database;
-    session: SessionContext | null;
+    workspace: WorkspaceContext | null;
+    account: AccountContext | null;
+    sessionId: string | null;
     dispatcher: PolicyDispatcher;
   };
 }

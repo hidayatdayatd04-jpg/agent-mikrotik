@@ -17,3 +17,10 @@ tooling/corpus/
 *.tgz
 apps/web/dist/
 *.tsbuildinfo
+
+.local-*/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+credential.key
+runtime.lock
