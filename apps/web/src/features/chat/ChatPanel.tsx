@@ -27,6 +27,7 @@ import {
   humanizeTool,
   isCompactionEvent,
   isManualTerminalEvent,
+  ResearchCard,
   type PipelineStep,
 } from "./ToolActivity";
 import { EmptyChatState } from "./EmptyChatState";
@@ -227,7 +228,10 @@ export function ChatPanel(props: {
     ci += 1;
   }
 
-  const liveSteps: PipelineStep[] = props.toolActivity.map((t, i) => ({
+  // Deep Research (web:) punya kartu hasil sendiri — bukan step pipeline live.
+  const liveSteps: PipelineStep[] = props.toolActivity
+    .filter((t) => !t.name.startsWith("web:"))
+    .map((t, i) => ({
     key: t.id ?? `live-${i}`,
     index: i + 1,
     label: humanizeTool(t.name),
@@ -386,6 +390,8 @@ export function ChatPanel(props: {
                                 activeConnectionId={props.activeConnectionId}
                                 conversationId={props.conversationId}
                               />
+                            ) : block.kind === "research" ? (
+                              <ResearchCard research={block.research} status={block.status} />
                             ) : (
                               <RunPipeline steps={block.steps ?? [block.step]} defaultOpen={false} overall={overall} />
                             )}
@@ -455,17 +461,22 @@ export function ChatPanel(props: {
                 {props.liveEvents?.length ? (
                   (() => {
                     const blocks = buildRunTimeline(props.liveEvents, true);
+                    // Streaming halus diterapkan ke blok TEKS terbaru (bukan blok
+                    // terakhir apa pun) — kartu research di antara teks tidak
+                    // boleh mematikan animasi ketik pada teks yang mengikuti.
+                    const lastTextIdx = blocks.reduce((acc, b, i) => (b.kind === "text" ? i : acc), -1);
                     return blocks.map((block, idx) => {
-                      const isLatest = idx === blocks.length - 1;
                       return (
                         <div key={block.key} className="my-2 first:mt-0 last:mb-0">
                           {block.kind === "text" ? (
                             <LiveTextBlock
                               text={block.text}
-                              isLatest={isLatest}
+                              isLatest={idx === lastTextIdx}
                               live={props.runLive}
                               onSendToTerminal={props.onSendToTerminal}
                             />
+                          ) : block.kind === "research" ? (
+                            <ResearchCard research={block.research} status={block.status} />
                           ) : (
                             <RunPipeline
                               steps={block.steps ?? [block.step]}

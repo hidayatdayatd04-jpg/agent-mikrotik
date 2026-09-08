@@ -73,6 +73,21 @@ export const aiProviderSettings = sqliteTable(
   },
 );
 
+// Web Search (Tavily) settings: satu API key per workspace, disimpan terenkripsi
+// AES-256-GCM dengan keyRing yang sama dipakai kredensial router & provider AI.
+export const webSearchSettings = sqliteTable("web_search_settings", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  provider: text("provider").notNull().default("tavily"),
+  apiKeyCiphertext: text("api_key_ciphertext").notNull(),
+  apiKeyNonce: text("api_key_nonce").notNull(),
+  apiKeyAuthTag: text("api_key_auth_tag").notNull(),
+  keyVersion: integer("key_version").notNull().default(1),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+});
+
 export const aiProviders = sqliteTable(
   "ai_providers",
   {

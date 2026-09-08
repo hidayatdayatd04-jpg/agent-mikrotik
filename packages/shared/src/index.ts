@@ -160,6 +160,19 @@ export const RunStatusSchema = z.enum([
 
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
+/** Structured Deep Research payload for the chat canvas (web: tool results). */
+export interface ResearchSource {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+export interface ResearchResult {
+  query: string;
+  answer: string | null;
+  sources: ResearchSource[];
+}
+
 export const RunEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.started"), seq: z.number().int() }),
   z.object({ type: z.literal("message.delta"), seq: z.number().int(), text: z.string() }),

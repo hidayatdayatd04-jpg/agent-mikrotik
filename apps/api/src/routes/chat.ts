@@ -48,6 +48,8 @@ export function createChatRoutes(deps: {
   executeTool: (input: { userId: string; connectionId: string; fqName: string; args: unknown; retryRead?: boolean }) => Promise<{ ok: boolean; output: string; errorCode?: string }>;
   /** Executes documentation tools via the shared Rosetta process (no router). */
   executeDocsTool: (input: { fqName: string; args: unknown }) => Promise<{ ok: boolean; output: string; errorCode?: string }>;
+  /** Executes web search via Tavily (no router). */
+  executeWebSearchTool: (input: { userId: string; args: unknown }) => Promise<{ ok: boolean; output: string; errorCode?: string }>;
   /** Builds the system instruction for a run. */
   buildInstruction: typeof buildSystemInstruction;
   /** Loads attachment content for the AI context (ownership pre-checked). */
@@ -533,6 +535,7 @@ export function createChatRoutes(deps: {
             code: String(p.code ?? ""),
             durationMs: typeof p.durationMs === "number" ? p.durationMs : null,
             args: typeof p.args === "string" ? p.args.slice(0, 500) : null,
+            research: p.research && typeof p.research === "object" ? (p.research as Record<string, unknown>) : null,
           });
         else if (event.type === "transaction.updated")
           persist("transaction.updated", "system", `tx-${String(p.transactionId ?? txId ?? "unknown")}`, `run-${run!.id}`, {
@@ -675,6 +678,9 @@ export function createChatRoutes(deps: {
             executeTool: (call) => {
               if (call.fqName.startsWith("docs:")) {
                 return deps.executeDocsTool({ fqName: call.fqName, args: call.args });
+              }
+              if (call.fqName.startsWith("web:")) {
+                return deps.executeWebSearchTool({ userId: workspace.userId, args: call.args });
               }
               if (connectionId && connectionId !== "none") {
                 return deps.executeTool({ userId: workspace.userId, connectionId, fqName: call.fqName, args: call.args, retryRead: call.retryRead });

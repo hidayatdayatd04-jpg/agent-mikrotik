@@ -8,6 +8,7 @@ import type { ChatClient, ChatMessage, ChatToolCall, ChatToolDefinition } from "
 import type { PolicyDispatcher, PolicySnapshot } from "../policies/dispatcher";
 import type { TransactionCoordinator } from "../transactions/coordinator";
 import type { NormalizedTool } from "../policies/normalize";
+import type { ResearchResult } from "@shared/index";
 import { isGreetingOnly } from "./intent";
 
 /**
@@ -214,7 +215,7 @@ export function selectRelevantTools(catalog: NormalizedTool[], userText: string)
     for (const kw of keywords) {
       if (hay.includes(kw)) s += kw.length >= 5 ? 200 : 100;
     }
-    if (t.fqName.startsWith("docs:")) s += 5_000;
+    if (t.fqName.startsWith("docs:") || t.fqName.startsWith("web:")) s += 5_000;
     return s;
   };
   // Rangking menurun, isi rakus sampai batas jumlah ATAU ukuran schema —
@@ -299,6 +300,37 @@ export function findDirectToolsForQuery(query: unknown, catalog: NormalizedTool[
   return out.slice(0, 5);
 }
 
+/**
+ * Structured Deep Research payload for the chat canvas: parsed from web: tool
+ * output so the UI can render source cards (title/url/snippet) instead of raw
+ * tool output. Data is untrusted internet content — never router data.
+ */
+function extractResearchPayload(fqName: string, result: { ok: boolean; output: string }): ResearchResult | null {
+  if (!fqName.startsWith("web:") || !result.ok) return null;
+  try {
+    const parsed = JSON.parse(result.output) as { query?: unknown; answer?: unknown; results?: unknown };
+    const rows = Array.isArray(parsed.results) ? parsed.results : [];
+    const sources = rows
+      .map((row) => {
+        const rec = (row ?? {}) as Record<string, unknown>;
+        return {
+          title: String(rec.title ?? "").slice(0, 200),
+          url: String(rec.url ?? "").slice(0, 600),
+          snippet: String(rec.snippet ?? "").slice(0, 300),
+        };
+      })
+      .filter((s) => /^https?:\/\//i.test(s.url))
+      .slice(0, 10);
+    return {
+      query: String(parsed.query ?? "").slice(0, 400),
+      answer: typeof parsed.answer === "string" && parsed.answer ? parsed.answer.slice(0, 800) : null,
+      sources,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function createAgentLoop(deps: AgentRunDeps) {
   const activeRuns = new Map<string, { cancelled: boolean; controller: AbortController }>();
 
@@ -322,7 +354,9 @@ export function createAgentLoop(deps: AgentRunDeps) {
         function: {
           name: t.fqName.replace(/[^A-Za-z0-9_-]/g, "_"),
           // Deskripsi dipangkas: hemat ~70% token skema tanpa menghilangkan makna.
-          description: desc.slice(0, 300),
+          // KECUALI tool web (Deep Research): protokol risetnya wajib terlihat
+          // utuh oleh model — tanpa ini model tidak mengiterasi pencarian.
+          description: desc.slice(0, t.fqName.startsWith("web:") ? 2000 : 300),
           parameters: (t.inputSchema && typeof t.inputSchema === "object"
             ? (t.inputSchema as Record<string, unknown>)
             : { type: "object", properties: {} }),
@@ -539,8 +573,9 @@ export function createAgentLoop(deps: AgentRunDeps) {
       .onConflictDoNothing();
     const durationMs = Date.now() - started;
     const argsPreview = JSON.stringify(redactObject(args ?? {})).slice(0, 500);
+    const research = extractResearchPayload(fqName, result);
     if (result.ok) {
-      await emit({ type: "tool.completed", payload: { callId: call.id, name: fqName, summary: redacted.slice(0, 1500), args: argsPreview, durationMs, index: toolIndex } });
+      await emit({ type: "tool.completed", payload: { callId: call.id, name: fqName, summary: redacted.slice(0, 1500), args: argsPreview, durationMs, index: toolIndex, ...(research ? { research } : {}) } });
     } else {
       await emit({ type: "tool.failed", payload: { callId: call.id, name: fqName, code: result.errorCode ?? "TOOL_FAILED", summary: redacted.slice(0, 1500), args: argsPreview, durationMs } });
     }
@@ -807,7 +842,7 @@ export function createAgentLoop(deps: AgentRunDeps) {
       const fullCatalog = greetingOnly ? [] : [...(await deps.catalog.getCatalog(input.policy.mode)), CONNECTION_CHECK_TOOL];
       const catalog = input.connectionId
         ? fullCatalog
-        : fullCatalog.filter((t) => t.fqName.startsWith("docs:") || t.fqName === CONNECTION_CHECK_FQ);
+        : fullCatalog.filter((t) => t.fqName.startsWith("docs:") || t.fqName.startsWith("web:") || t.fqName === CONNECTION_CHECK_FQ);
       const providerTools = toProviderTools(selectRelevantTools(catalog, input.userText));
       const toolCallCount = new Map<string, number>(); // dedup tool call ids
       // Guard anti-loop: tool sama + argumen identik yang diulang tanpa
@@ -954,7 +989,9 @@ export function createAgentLoop(deps: AgentRunDeps) {
             chatHistory.push({ role: "assistant", content: stepText });
             chatHistory.push({
               role: "user",
-              content: "[Sistem: Silakan panggil tool pembacaan router yang diperlukan sekarang untuk memeriksa router.]",
+              content:
+                "[Sistem: Anda baru menulis rencana TANPA memanggil tool. Panggil SEKARANG tool yang relevan — " +
+                "tool router bila soal router pengguna, atau tool pencarian web bila ini riset internet. Jangan hanya berbicara.]",
             });
             continue;
           }
@@ -1197,6 +1234,24 @@ function policyDenialGuidance(code: string, toolName: string): string {
  * Guidance for tool execution failures (after policy allowed, but MCP child returned error).
  */
 function toolFailGuidance(errorCode: string, toolName: string): string {
+  if (errorCode === "WEB_SEARCH_NOT_CONFIGURED") {
+    return (
+      `Pencarian web belum dikonfigurasi (API key Tavily belum diisi). Beritahu pengguna untuk membuka Pengaturan → Deep Research ` +
+      `dan menambahkan API key. JANGAN mencoba tool ini lagi pada giliran yang sama.`
+    );
+  }
+  if (errorCode === "WEB_SEARCH_UNAUTHORIZED") {
+    return (
+      `API key Tavily ditolak sistem. Beritahu pengguna bahwa API key kemungkinan tidak valid/kedaluwarsa ` +
+      `dan arahkan memperbaruinya di Pengaturan → Deep Research.`
+    );
+  }
+  if (errorCode === "WEB_SEARCH_RATE_LIMITED") {
+    return (
+      `Pencarian web sedang dibatasi (rate limit). Beritahu pengguna untuk menunggu sebentar. ` +
+      `Jangan mengulang tool ini berkali-kali pada giliran yang sama.`
+    );
+  }
   if (errorCode === "TOOL_FAILED") {
     return (
       `Tool "${toolName}" gagal dieksekusi. Periksa output error di atas dan laporkan ke pengguna. ` +

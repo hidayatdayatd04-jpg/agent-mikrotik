@@ -13,6 +13,7 @@ export type Route =
 const SETTINGS_SECTIONS = new Set([
   "connectors",
   "providers",
+  "web-search",
   "profile",
   "appearance",
   "context",

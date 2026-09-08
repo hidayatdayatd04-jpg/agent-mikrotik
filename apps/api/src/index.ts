@@ -26,6 +26,9 @@ import { createBackupRoutes } from "./routes/backups";
 import { createApprovalService } from "./services/approval";
 import { createApprovalRoutes } from "./routes/approvals";
 import { NETWORK_MAP_TOOL } from "./agent/network-map-tool";
+import { WEB_SEARCH_TOOL, executeWebSearchTool } from "./agent/web-search-tool";
+import { createWebSearchSettingsService } from "./agent/web-search-settings";
+import { createWebSearchSettingsRoutes } from "./routes/web-search-settings";
 import { createTargetPolicy } from "./services/target-policy";
 import { envKeyRing } from "./lib/crypto";
 import { McpSupervisor } from "./mcp/supervisor";
@@ -96,7 +99,8 @@ const notifications = createNotificationService({ db });
 const monitoring = createMonitoringService({ db, connectors, notifications });
 const backups = createBackupService({ db, connectors });
 const approvals = createApprovalService({ db, backups, notifications });
-const customTools = [...normalizeCustomTools(customManifests()), NETWORK_MAP_TOOL];
+const webSearchSettingsService = createWebSearchSettingsService({ db, keyRing, logger });
+const customTools = [...normalizeCustomTools(customManifests()), NETWORK_MAP_TOOL, WEB_SEARCH_TOOL];
 const catalogSource = createLiveCatalogSource({
   // system-level children: the supervisor respawns per (user,connection) specs
   // with the right mode when agent runs request them; these cover catalog
@@ -226,6 +230,12 @@ const executeDocsTool = async (input: { fqName: string; args: unknown }): Promis
     return { ok: false, output: err instanceof Error ? err.message : String(err), errorCode: "TOOL_FAILED" };
   }
 };
+// Web search executor — independen dari router (pola executeDocsTool).
+const executeWebSearchToolBound = (input: { userId: string; args: unknown }) =>
+  executeWebSearchTool(
+    { getApiKey: (userId: string) => webSearchSettingsService.getDecryptedKey(userId), logger },
+    input,
+  );
 const hub = new RunEventHub();
 
 const agentLoop = createAgentLoop({
@@ -238,7 +248,9 @@ const agentLoop = createAgentLoop({
     maxSteps: config.AGENT_MAX_STEPS,
     maxToolCalls: config.AGENT_MAX_TOOL_CALLS,
     runTimeoutMs: config.AGENT_RUN_TIMEOUT_MS,
-    maxTokens: 4096,
+    // 16k: model Gemini 2.5+/3.5 menghitung token "thinking" di dalam
+    // max_tokens — 4096 habis untuk reasoning sebelum teks keluar.
+    maxTokens: 16_384,
   },
 });
 
@@ -266,6 +278,7 @@ const chatRoutes = createChatRoutes({
   makeMockClient: () => createMockClient(),
   executeTool,
   executeDocsTool,
+  executeWebSearchTool: executeWebSearchToolBound,
   buildInstruction: buildSystemInstruction,
   loadAttachmentContent: async (input) => {
     if (!storage) return null;
@@ -294,7 +307,7 @@ const chatRoutes = createChatRoutes({
     maxSteps: config.AGENT_MAX_STEPS,
     maxToolCalls: config.AGENT_MAX_TOOL_CALLS,
     runTimeoutMs: config.AGENT_RUN_TIMEOUT_MS,
-    maxTokens: 4096,
+    maxTokens: 16_384,
   },
   runRateLimit: { maxRuns: 20, windowMs: 60_000 },
 });
@@ -345,6 +358,7 @@ app.route("/api/terminal", terminalRoutes);
 app.route("/api/connectors", connectorRoutes);
 app.route("/api/transactions", transactionRoutes);
 app.route("/api/ai-provider", aiProviderRoutes);
+app.route("/api/web-search-settings", createWebSearchSettingsRoutes({ settings: webSearchSettingsService }));
 app.route("/api/attachments", attachmentRoutes);
 app.route("/api/network-map", networkMapRoutes);
 app.route("/api/monitoring", monitoringRoutes);

@@ -24,4 +24,6 @@ CREATE INDEX IF NOT EXISTS "approval_requests_conn_idx" ON "approval_requests" (
 CREATE INDEX IF NOT EXISTS "approval_requests_run_idx" ON "approval_requests" ("run_id");
 CREATE TABLE IF NOT EXISTS "approval_operation_log" ("id" text PRIMARY KEY NOT NULL, "approval_id" text NOT NULL, "seq" integer NOT NULL, "command" text NOT NULL, "status" text NOT NULL DEFAULT 'pending', "output" text, "error_message" text, "duration_ms" integer, "executed_at" integer, FOREIGN KEY ("approval_id") REFERENCES "approval_requests" ("id") ON DELETE cascade);
 CREATE INDEX IF NOT EXISTS "approval_op_log_approval_idx" ON "approval_operation_log" ("approval_id","seq")`,
+  // Migration 27: Web Search (Tavily) settings — API key per workspace (AES-256-GCM sealed)
+  `CREATE TABLE IF NOT EXISTS "web_search_settings" ("user_id" text PRIMARY KEY NOT NULL, "provider" text NOT NULL DEFAULT 'tavily', "api_key_ciphertext" text NOT NULL, "api_key_nonce" text NOT NULL, "api_key_auth_tag" text NOT NULL, "key_version" integer NOT NULL DEFAULT 1, "created_at" integer NOT NULL, "updated_at" integer NOT NULL, FOREIGN KEY ("user_id") REFERENCES "workspaces" ("id") ON DELETE cascade);`,
 ];

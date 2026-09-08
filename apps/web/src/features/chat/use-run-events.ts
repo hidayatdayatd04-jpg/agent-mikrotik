@@ -122,6 +122,7 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
           setQueueStatus(null);
           const p = ev.payload as { name?: string; callId?: string };
           const name = String(p.name ?? "tool");
+          if (name.startsWith("web:")) return; // Deep Research — kartu sendiri via liveEvents
           const id = String(p.callId ?? `${name}-${ev.seq}`);
           setToolActivity((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, name, status: "running" }]));
         } else if (ev.type === "transaction.updated") {
@@ -130,7 +131,8 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
           const settling = ["preparing", "active", "verifying", "committing", "rolling_back"].includes(String(p.state ?? ""));
           setTxStatus(settling ? `Menyelesaikan transaksi · ${p.state} · aksi ${p.actions ?? 0}` : `Safe Mode ${p.state ?? "?"} · aksi ${p.actions ?? 0}`);
         } else if (ev.type === "tool.completed") {
-          const p = ev.payload as { callId?: string };
+          const p = ev.payload as { callId?: string; name?: string };
+          if (String(p.name ?? "").startsWith("web:")) return; // Deep Research
           const id = p.callId ? String(p.callId) : null;
           setToolActivity((prev) => {
             const next = [...prev];
@@ -150,7 +152,8 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
             return next;
           });
         } else if (ev.type === "tool.failed") {
-          const p = ev.payload as { callId?: string };
+          const p = ev.payload as { callId?: string; name?: string };
+          if (String(p.name ?? "").startsWith("web:")) return; // Deep Research
           const id = p.callId ? String(p.callId) : null;
           setToolActivity((prev) => {
             const next = [...prev];
