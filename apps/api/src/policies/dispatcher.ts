@@ -1,4 +1,17 @@
-import type { NormalizedTool } from "./normalize";
+import { findForbiddenArg } from "./dispatcher-args";
+import { checkAntiLockout } from "./dispatcher-antilockout";
+import { checkGatewayRules } from "./dispatcher-gateway";
+import type { CatalogSource, DispatchCheckInput, DispatchDecision, ModeSource, PolicySnapshot, SchemaValidator } from "./dispatcher-types";
+
+export type {
+  CatalogSource,
+  DispatchCheckInput,
+  DispatchDecision,
+  ModeSource,
+  PolicySnapshot,
+  SchemaValidator,
+} from "./dispatcher-types";
+export { buildModeCatalog } from "./dispatcher-catalog";
 
 /**
  * Policy dispatcher — single execution path for every tool call.
@@ -7,86 +20,6 @@ import type { NormalizedTool } from "./normalize";
  * current mode + version (compare-and-set race window), tool allowlist for
  * that mode, input schema, and transaction state. Nothing is pre-authorized.
  */
-export interface PolicySnapshot {
-  userId: string;
-  connectionId: string;
-  connectionHost?: string;
-  managementInterface?: string;
-  /** effective mode for this run (intersection of connector + run intent) */
-  mode: "read-only" | "write";
-  /** original connector mode from DB — used solely for CAS race detection (defaults to mode) */
-  connectorMode?: "read-only" | "write";
-  modeVersion: number;
-  /** run-level mode constraint (e.g. read-only request even when connector has write enabled) */
-  runMode?: "read-only" | "write";
-  /** transaction state on this connection (M6) */
-  transactionState: "none" | "active";
-}
-
-export interface ModeSource {
-  /** live mode + version from the permissions table (not a cached copy) */
-  getMode(userId: string, connectionId: string): Promise<{ mode: "read-only" | "write"; version: number }>;
-}
-
-export interface DispatchCheckInput {
-  workspace: { userId: string } | null;
-  snapshot: PolicySnapshot;
-  toolFqName: string;
-  args: unknown;
-}
-
-export type DispatchDecision =
-  | { allowed: true; tool: NormalizedTool }
-  | { allowed: false; code: string; message: string };
-
-export interface CatalogSource {
-  /** returns the normalized tool catalog for this mode (async: may spawn/respawn MCP children) */
-  getCatalog(mode: "read-only" | "write"): Promise<NormalizedTool[]>;
-}
-
-export interface SchemaValidator {
-  validate(schema: unknown, input: unknown): { ok: boolean; message?: string };
-}
-
-/**
- * Connection-target argument names an LLM must never set — the SSH target and
- * credentials always come from the server-side connector, never from tool args.
- * Deliberately NARROW: legitimate RouterOS rule parameters such as `address`,
- * `ip`, `port`, `device`, `target`, or file names must stay usable (e.g.
- * `add_ip_address` requires `address`; filter rules accept `port`). The
- * per-connection MCP child is already bound to one router, so rule data args
- * cannot redirect execution elsewhere.
- */
-const FORBIDDEN_ARG_NAMES = new Set([
-  "host", "hostname",
-  "username", "user", "password", "credential", "credentials",
-]);
-
-/**
- * Safe-mode lifecycle tools are BACKEND-ONLY: only the transaction coordinator
- * (M6 state machine) may call enable/commit/rollback. The model asking for them
- * is always denied, whatever the mode — the model never drives commit decisions.
- * `safe_mode_status` stays callable (read-only probe).
- */
-const SAFE_MODE_LIFECYCLE_TOOLS = new Set(["enable_safe_mode", "commit_safe_mode", "rollback_safe_mode"]);
-
-function findForbiddenArg(val: unknown, depth = 0): string | null {
-  if (depth > 8 || !val || typeof val !== "object") return null;
-  if (Array.isArray(val)) {
-    for (const item of val) {
-      const found = findForbiddenArg(item, depth + 1);
-      if (found) return found;
-    }
-    return null;
-  }
-  for (const [key, child] of Object.entries(val as Record<string, unknown>)) {
-    if (FORBIDDEN_ARG_NAMES.has(key.toLowerCase())) return key;
-    const found = findForbiddenArg(child, depth + 1);
-    if (found) return found;
-  }
-  return null;
-}
-
 export class PolicyDispatcher {
   constructor(
     private deps: {
@@ -166,64 +99,9 @@ export class PolicyDispatcher {
       return this.deny(snapshot, toolFqName, "TOOL_UNSUPPORTED", "Tool belum lolos review klasifikasi risiko dan tidak diizinkan.");
     }
 
-    // 3b. safe-mode lifecycle is backend-only (transaction coordinator drives it)
-    if (SAFE_MODE_LIFECYCLE_TOOLS.has(tool.rawName)) {
-      return this.deny(snapshot, toolFqName, "SAFE_MODE_UNAVAILABLE", "Tool ini hanya dikelola sistem (transaction coordinator), bukan oleh AI.");
-    }
-
-    // 4. gateway tools: on read-only they can only reach read tools; the inner
-    //    call is re-dispatched through check() so the effective tool+args are
-    //    validated, not the outer label.
-    if (tool.isGateway && effectiveMode === "read-only") {
-      const isInvokeTool = tool.rawName === "invoke_tool";
-      if (isInvokeTool) {
-        const inner = (args as { name?: string; arguments?: unknown } | null)?.name;
-        if (!inner) {
-          return this.deny(snapshot, toolFqName, "VALIDATION_FAILED", "Gateway tool memerlukan nama tool target.");
-        }
-        // resolve inner name against the same catalog namespace
-        const prefix = toolFqName.split(":")[0];
-        const innerFq = inner.includes(":") ? inner : `${prefix}:${inner}`;
-        const innerTool = catalog.find((t) => t.fqName === innerFq)
-          ?? catalog.find((t) => t.rawName === inner.replace(/^.*:/, ""));
-        if (!innerTool) {
-          // Nama tak dikenal di katalog read-only: bukan soal mode tulis —
-          // model salah nama. WRITE_DISABLED di sini menyesatkan (meminta
-          // toggle Write untuk typo), jadi tolak sebagai TOOL_UNSUPPORTED.
-          return this.deny(snapshot, toolFqName, "TOOL_UNSUPPORTED", `Tool target "${inner}" tidak dikenal dalam katalog run ini. Pilih nama tool dari daftar yang tersedia, jangan mengarang nama.`);
-        }
-        if (innerTool.risk !== "read") {
-          return this.deny(snapshot, toolFqName, "WRITE_DISABLED", `Gateway tidak boleh memanggil tool non-read pada mode Read-Only.`);
-        }
-      } else {
-        return this.deny(snapshot, toolFqName, "WRITE_DISABLED", "Eksekusi command CLI langsung tidak diizinkan pada mode Read-Only.");
-      }
-    }
-    if (tool.isGateway) {
-      // even in write mode, a gateway must never reach safe-mode lifecycle tools
-      const inner = (args as { name?: string } | null)?.name;
-      if (inner && SAFE_MODE_LIFECYCLE_TOOLS.has(inner.replace(/^.*:/, ""))) {
-        return this.deny(snapshot, toolFqName, "SAFE_MODE_UNAVAILABLE", "Tool ini hanya dikelola sistem (transaction coordinator), bukan oleh AI.");
-      }
-      if (tool.rawName === "run_routeros_command" || tool.rawName === "run_command" || tool.rawName === "execute_command") {
-        const cmd = String((args as { command?: unknown } | null)?.command ?? "").trim().toLowerCase();
-        if (/safe[-_]?mode/i.test(cmd)) {
-          return this.deny(snapshot, toolFqName, "SAFE_MODE_UNAVAILABLE", "Safe mode hanya dikelola koordinator transaksi.");
-        }
-      }
-      // Unknown inner tool names (e.g. model mengarang "mt_run_routeros_command")
-      // ditolak sebelum eksekusi — MCP hanya mengembalikan teks error yang
-      // terlihat sukses sehingga model mengulanginya tanpa kemajuan.
-      if (inner) {
-        const prefix = toolFqName.split(":")[0];
-        const innerFq = inner.includes(":") ? inner : `${prefix}:${inner}`;
-        const known = catalog.some((t) => t.fqName === innerFq)
-          || catalog.some((t) => t.rawName === inner.replace(/^.*:/, ""));
-        if (!known) {
-          return this.deny(snapshot, toolFqName, "TOOL_UNSUPPORTED", `Tool target "${inner}" tidak dikenal dalam katalog run ini. Pilih nama tool dari daftar yang tersedia, jangan mengarang nama atau menambah prefix.`);
-        }
-      }
-    }
+    // 3b + 4. safe-mode lifecycle & gateway rules
+    const gw = checkGatewayRules(tool, toolFqName, args, catalog, effectiveMode);
+    if (gw) return this.deny(snapshot, toolFqName, gw.code, gw.message);
 
     // 5. schema validation of effective args
     const v = this.deps.validator.validate(tool.inputSchema, args);
@@ -240,60 +118,8 @@ export class PolicyDispatcher {
     }
 
     // 6.5. Anti-lockout guard: forbid disabling or removing management interface/IP or SSH service
-    if (snapshot.managementInterface || snapshot.connectionHost) {
-      const mgmtIface = snapshot.managementInterface?.toLowerCase();
-      const mgmtHost = snapshot.connectionHost?.toLowerCase();
-
-      // Check raw commands
-      if (tool.rawName === "run_routeros_command" || tool.rawName === "run_command" || tool.rawName === "execute_command") {
-        const cmd = String((args as { command?: unknown } | null)?.command ?? "").trim().toLowerCase();
-
-        // Blocking disabling SSH service
-        if (/^\/?ip\s+service\s+(set\b.*ssh.*disabled=yes|disable\b.*ssh)/i.test(cmd)) {
-          return this.deny(snapshot, toolFqName, "FORBIDDEN", "Ditolak untuk mencegah lockout: Menonaktifkan service SSH akan memutus koneksi manajemen.");
-        }
-
-        // Blocking disabling/removing management interface
-        if (mgmtIface) {
-          const ifaceRegex = new RegExp(`^\\/?interface\\s+(set\\b.*disabled=yes|disable\\b).*\\b${mgmtIface}\\b`, "i");
-          if (ifaceRegex.test(cmd) || (cmd.includes(mgmtIface) && /^\/?interface\s+(disable|set\b.*disabled=yes)/i.test(cmd))) {
-            return this.deny(
-              snapshot,
-              toolFqName,
-              "FORBIDDEN",
-              `Perintah ditolak untuk mencegah lockout: Interface "${snapshot.managementInterface}" adalah jalur koneksi aktif agen (${snapshot.connectionHost ?? "router"}). Menonaktifkannya akan memutus komunikasi secara permanen. Untuk mematikan internet dengan aman, pasang firewall filter drop di chain forward (contoh: /ip firewall filter add chain=forward action=drop comment="Blokir internet klien").`,
-            );
-          }
-        }
-
-        // Blocking disabling/removing connection IP
-        if (mgmtHost) {
-          if (cmd.includes(mgmtHost) && /^\/?ip\s+address\s+(disable|remove|set\b.*disabled=yes)/i.test(cmd)) {
-            return this.deny(
-              snapshot,
-              toolFqName,
-              "FORBIDDEN",
-              `Perintah ditolak untuk mencegah lockout: Alamat IP "${snapshot.connectionHost}" adalah IP koneksi aktif agen.`,
-            );
-          }
-        }
-      }
-
-      // Check structured tools
-      if (mgmtIface) {
-        const a = (args ?? {}) as Record<string, unknown>;
-        const targetIface = String(a.interface ?? a.name ?? a.interface_name ?? "").toLowerCase();
-        const isDisabling = a.disabled === true || a.disabled === "yes" || tool.rawName.includes("disable");
-        if (tool.rawName.includes("interface") && targetIface === mgmtIface && isDisabling) {
-          return this.deny(
-            snapshot,
-            toolFqName,
-            "FORBIDDEN",
-            `Operasi ditolak untuk mencegah lockout: Interface "${snapshot.managementInterface}" adalah jalur koneksi aktif agen (${snapshot.connectionHost ?? "router"}). Untuk mematikan internet, pasang firewall filter drop pada chain forward.`,
-          );
-        }
-      }
-    }
+    const lockout = checkAntiLockout(snapshot, tool, args);
+    if (lockout) return this.deny(snapshot, toolFqName, lockout.code, lockout.message);
 
     // 7. transaction state: mutations outside an active safe-mode transaction
     //    are rejected once M6 wires the real transaction manager in.
@@ -309,17 +135,4 @@ export class PolicyDispatcher {
     this.deps.audit({ userId: snapshot.userId, connectionId: snapshot.connectionId, tool, decision: "denied", code });
     return { allowed: false, code, message };
   }
-}
-
-/**
- * Builds the catalog the model sees for a mode. Read-Only: verified read tools
- * only (upstream read-only registration ∩ annotation + Rosetta docs + custom
- * read tools). Write: everything classified read/write/destructive — nothing
- * silently dropped to shrink the request.
- */
-export function buildModeCatalog(allTools: NormalizedTool[], mode: "read-only" | "write"): NormalizedTool[] {
-  if (mode === "write") {
-    return allTools.filter((t) => t.risk === "read" || t.risk === "write" || t.risk === "destructive");
-  }
-  return allTools.filter((t) => t.risk === "read");
 }
