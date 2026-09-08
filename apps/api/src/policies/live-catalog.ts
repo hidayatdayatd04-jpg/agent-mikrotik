@@ -2,6 +2,8 @@ import type { NormalizedTool } from "./normalize";
 import { buildModeCatalog } from "./dispatcher";
 import { normalizeUpstreamTools } from "./normalize";
 import type { McpChild } from "../mcp/supervisor";
+import { retryMcpRead } from "../mcp/recovery";
+import type { Logger } from "../lib/logger";
 
 /**
  * Live catalog source backed by the supervised child processes:
@@ -18,17 +20,24 @@ export interface LiveCatalogDeps {
   customTools: NormalizedTool[];
   rosettaNamespace?: string;
   mikrotikNamespace?: string;
+  logger?: Logger;
 }
 
 export function createLiveCatalogSource(deps: LiveCatalogDeps) {
   const rosettaNs = deps.rosettaNamespace ?? "docs";
   const mtNs = deps.mikrotikNamespace ?? "mt";
 
+  let documentationUnavailable = false;
   async function loadAll(): Promise<NormalizedTool[]> {
     const [full, roSetRaw, roRaw] = await Promise.all([
-      deps.getFullChild().then(paginateTools),
-      deps.getReadOnlyChild().then(paginateTools),
-      deps.rosettaToolNames(),
+      retryMcpRead(() => deps.getFullChild().then(paginateTools)),
+      retryMcpRead(() => deps.getReadOnlyChild().then(paginateTools)),
+      deps.rosettaToolNames().catch((error: unknown) => {
+        // Documentation availability must not prevent live router inspection.
+        documentationUnavailable = true;
+        deps.logger?.warn("documentation catalog unavailable", { error: error instanceof Error ? error.message : String(error) });
+        return [];
+      }),
     ]);
     const upstream = normalizeUpstreamTools(full, roSetRaw.map((t) => ({ name: t.name })), "upstream-mikrotik", mtNs);
     // Rosetta: documentation-only, always read
@@ -47,17 +56,29 @@ export function createLiveCatalogSource(deps: LiveCatalogDeps) {
   }
 
   // cache per mode with invalidation when the supervisor respawns a child
-  let cache: { mode: "read-only" | "write"; tools: NormalizedTool[] } | null = null;
+  let cache: { tools: NormalizedTool[]; expiresAt: number } | null = null;
+  let loading: Promise<NormalizedTool[]> | null = null;
+  let generation = 0;
 
   return {
     async getCatalog(mode: "read-only" | "write"): Promise<NormalizedTool[]> {
-      if (cache && cache.mode === mode) return buildModeCatalog(cache.tools, mode);
-      const all = await loadAll();
-      cache = { mode, tools: all };
+      if (cache && Date.now() < cache.expiresAt) return buildModeCatalog(cache.tools, mode);
+      if (!loading) {
+        const version = generation;
+        documentationUnavailable = false;
+        const operation = loadAll().then((tools) => {
+          if (version === generation) cache = { tools, expiresAt: Date.now() + (documentationUnavailable ? 30_000 : 300_000) };
+          return tools;
+        }).finally(() => { if (loading === operation) loading = null; });
+        loading = operation;
+      }
+      const all = await loading;
       return buildModeCatalog(all, mode);
     },
     invalidate() {
       cache = null;
+      generation++;
+      loading = null;
     },
   };
 }

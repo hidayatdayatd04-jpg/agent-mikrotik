@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { X, Copy, Trash2 } from "lucide-react";
+import { X, Copy, Trash2 } from "@/components/icons";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
 import type { ConnectorDTO } from "@shared/index";

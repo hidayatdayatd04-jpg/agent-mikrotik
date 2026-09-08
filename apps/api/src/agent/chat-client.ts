@@ -456,7 +456,33 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
           }
 
           const toolAcc = new Map<number, { id: string; name: string; args: string; extraContent?: unknown }>();
+          let nextToolIdx = 0;
+          const idToIdx = new Map<string, number>();
+          let lastActiveIdx = 0;
+
+          function resolveToolIndex(tc: { index?: number; id?: string }): number {
+            if (typeof tc.index === "number" && Number.isSafeInteger(tc.index) && tc.index >= 0) {
+              if (tc.id) idToIdx.set(tc.id, tc.index);
+              lastActiveIdx = tc.index;
+              if (tc.index >= nextToolIdx) nextToolIdx = tc.index + 1;
+              return tc.index;
+            }
+            if (tc.id) {
+              const existing = idToIdx.get(tc.id);
+              if (existing !== undefined) {
+                lastActiveIdx = existing;
+                return existing;
+              }
+              const idx = nextToolIdx++;
+              idToIdx.set(tc.id, idx);
+              lastActiveIdx = idx;
+              return idx;
+            }
+            return lastActiveIdx;
+          }
+
           let finishReason = "stop";
+          let latestUsage: { promptTokens: number; completionTokens: number } | null = null;
           const chunks = (async function* () {
             try {
               for await (const chunk of stream!) yield chunk;
@@ -483,7 +509,7 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
                 yield { type: "text", text: delta.content };
               }
               for (const tc of delta?.tool_calls ?? []) {
-                const idx = tc.index ?? 0;
+                const idx = resolveToolIndex(tc);
                 const acc = toolAcc.get(idx) ?? { id: "", name: "", args: "", extraContent: undefined };
                 if (tc.id) acc.id = tc.id;
                 if (tc.function?.name) acc.name = tc.function.name;
@@ -493,12 +519,9 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
               }
               if (chunk.usage && Number.isSafeInteger(chunk.usage.prompt_tokens) && Number.isSafeInteger(chunk.usage.completion_tokens)) {
                 actualTokens = (chunk.usage.prompt_tokens ?? 0) + (chunk.usage.completion_tokens ?? 0);
-                yield {
-                  type: "usage",
-                  usage: {
-                    promptTokens: chunk.usage.prompt_tokens ?? 0,
-                    completionTokens: chunk.usage.completion_tokens ?? 0,
-                  },
+                latestUsage = {
+                  promptTokens: chunk.usage.prompt_tokens ?? 0,
+                  completionTokens: chunk.usage.completion_tokens ?? 0,
                 };
               }
               if (choice?.finish_reason) {
@@ -526,6 +549,13 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
                 else logger.warn("incomplete tool call delta discarded", { idx });
               }
               if (calls.length) yield { type: "tool_calls", toolCalls: calls };
+            }
+            // Yield latest usage once per stream (avoids compounding token counts when provider yields usage on multiple chunks)
+            if (latestUsage) {
+              yield {
+                type: "usage",
+                usage: latestUsage,
+              };
             }
             // Rekonsiliasi TPM: estimasi → token aktual dari respons API.
             ticket.complete(actualTokens ?? estimated);
@@ -575,7 +605,7 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
 
         if (classified.isDaily) {
           const resetAt = extractRetryMs(err) !== null ? Date.now() + (extractRetryMs(err) as number) : nextMidnightUtcMs(Date.now());
-          limiter.notifyDailyQuotaExhausted({ modelKey, resetAtMs: resetAt, reason: raw.slice(0, 300) });
+          limiter.notifyDailyQuotaExhausted({ modelKey, sharedKey, resetAtMs: resetAt, reason: raw.slice(0, 300) });
           limiter.setFallbackReason(modelKey, `Kuota harian habis pada ${modelKey}; fallback ke model cadangan.`);
           return { retry: false, daily: true, waitMs: 0, error: toProviderError(err, cfg) };
         }

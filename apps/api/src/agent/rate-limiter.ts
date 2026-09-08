@@ -450,15 +450,16 @@ export class CentralRateLimiter {
   }
 
   /** Catat 429 / Retry-After dari provider; hormati Retry-After apa adanya. */
-  notifyRateLimited(input: { modelKey: string; sharedKey?: string | null; retryAtMs?: number | null; reason: string }): void {
+  notifyRateLimited(input: { modelKey: string; sharedKey?: string | null; retryAtMs?: number | null; reason: string; blockShared?: boolean }): void {
     const now = this.now();
     const until = input.retryAtMs && Number.isFinite(input.retryAtMs) && input.retryAtMs > now
       ? input.retryAtMs
       : now + computeBackoffWithJitter(0, 1000, 30_000, this.jitterFn());
     const info: BlockInfo = { until, reason: input.reason, isDailyQuota: false };
     this.blocked.set(`model:${input.modelKey}`, info);
-    if (input.sharedKey) {
-      // Blokir shared lebih singkat agar model lain dengan key sama ikut menahan diri.
+    // Hanya blokir sharedKey jika secara eksplisit diminta (mis. kuota project/akun),
+    // jangan blokir model-model alternatif pada provider yang sama saat terjadi 429 per-model.
+    if (input.sharedKey && input.blockShared) {
       const sharedInfo: BlockInfo = { until, reason: `Shared quota: ${input.reason}`, isDailyQuota: false };
       const existing = this.blocked.get(`shared:${input.sharedKey}`);
       if (!existing || existing.until < until) this.blocked.set(`shared:${input.sharedKey}`, sharedInfo);
@@ -466,13 +467,28 @@ export class CentralRateLimiter {
   }
 
   /** Hentikan sementara model yang kuota hariannya habis (tanpa RPD buatan aplikasi). */
-  notifyDailyQuotaExhausted(input: { modelKey: string; resetAtMs?: number | null; reason: string }): void {
+  notifyDailyQuotaExhausted(input: { modelKey: string; sharedKey?: string | null; resetAtMs?: number | null; reason: string }): void {
     const now = this.now();
     const until = input.resetAtMs && Number.isFinite(input.resetAtMs) && input.resetAtMs > now
       ? input.resetAtMs
       : nextMidnightUtcMs(now);
     this.blocked.set(`model:${input.modelKey}`, { until, reason: input.reason, isDailyQuota: true });
+    if (input.sharedKey) {
+      this.blocked.set(`shared:${input.sharedKey}`, { until, reason: `Shared daily quota: ${input.reason}`, isDailyQuota: true });
+    }
     this.fallbackReasons.set(input.modelKey, `Kuota harian habis: ${input.reason}`);
+  }
+
+  unblockModel(modelKey: string): void {
+    this.blocked.delete(`model:${modelKey}`);
+    this.fallbackReasons.delete(modelKey);
+  }
+
+  clearExpiredBlocks(): void {
+    const now = this.now();
+    for (const [k, info] of this.blocked.entries()) {
+      if (info.until <= now) this.blocked.delete(k);
+    }
   }
 
   notifySuccess(modelKey: string): void {

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle, Clock, Scissors } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle, Clock, Scissors } from "@/components/icons";
 import type { ActivityEventDTO } from "./chat-hooks";
 
 export type StepStatus = "running" | "completed" | "failed" | "unknown";
@@ -34,13 +34,31 @@ export function isCompactionEvent(ev: ActivityEventDTO): boolean {
 
 const HUMAN_TOOL_LABELS: [RegExp, string][] = [
   [/check_connection/i, "Memeriksa status koneksi"],
+  [/remove_vlan_interface|delete_vlan/i, "Menghapus interface VLAN"],
+  [/create_vlan_interface/i, "Membuat interface VLAN"],
+  [/list_vlan_interfaces/i, "Membaca interface VLAN"],
+  [/remove_bridge|delete_bridge/i, "Menghapus interface Bridge"],
+  [/create_bridge/i, "Membuat interface Bridge"],
+  [/list_bridges|print_bridge/i, "Membaca interface Bridge"],
+  [/add_bridge_vlan/i, "Mengonfigurasi VLAN Bridge"],
+  [/add_bridge_port/i, "Menghubungkan port ke Bridge"],
+  [/remove_ip_pool|delete_ip_pool/i, "Menghapus IP Pool"],
+  [/create_ip_pool/i, "Membuat IP Pool"],
+  [/list_ip_pools/i, "Membaca IP Pool"],
+  [/remove_ip_address|delete_ip/i, "Menghapus IP address"],
+  [/add_ip_address/i, "Menambahkan IP address"],
   [/list_ip_addresses|print_ip_address/i, "Membaca IP address"],
   [/list_interfaces/i, "Membaca interface"],
   [/list_routes|print_ip_route/i, "Membaca route"],
+  [/add_dhcp_server/i, "Menambahkan DHCP Server"],
+  [/add_dhcp_network/i, "Menambahkan DHCP Network"],
   [/dhcp_client|get_dhcp_clients/i, "Membaca DHCP client"],
   [/dhcp_server/i, "Membaca DHCP server"],
+  [/add_nat_rule/i, "Menambahkan aturan NAT"],
   [/firewall_nat|list_firewall_nat/i, "Membaca NAT"],
+  [/add_filter_rule|add_firewall_rule/i, "Menambahkan aturan firewall"],
   [/firewall.*filter|list_firewall_rules/i, "Membaca firewall filter"],
+  [/design_network_segment/i, "Mendesain segmen jaringan"],
   [/system_resource|resource/i, "Membaca resource sistem"],
   [/identity/i, "Memeriksa koneksi & identitas"],
   [/find_tools|routeros_search/i, "Mencari tool yang sesuai"],
@@ -182,23 +200,16 @@ export function runPipelineHeadline(input: {
   const { stepsCount, txCount, failedSteps, live, overall, steps } = input;
   if (stepsCount === 0 && txCount === 0) return { text: "Menyiapkan pemeriksaan…", tone: "mute" };
   const phase = phaseTitle(steps ?? []);
-  // Status tool dan status run dipisah: tool sukses tetap sukses walau run gagal.
   if (!live && overall === "failed") {
-    const done = stepsCount - failedSteps;
-    return { text: `${phase} · ${done} dari ${stepsCount} selesai · jawaban terhenti`, tone: "bad" };
+    return { text: phase, tone: "bad" };
   }
   if (!live && overall === "cancelled") {
     return { text: `${phase} · dibatalkan`, tone: "mute" };
   }
   if (live) {
-    const done = (steps ?? []).filter((s) => s.status === "completed").length;
-    if (stepsCount > 1 && done < stepsCount) return { text: `${phase} · ${done} dari ${stepsCount}`, tone: "busy" };
     return { text: phase, tone: "busy" };
   }
-  if (failedSteps > 0) {
-    return { text: `${phase} · ${stepsCount - failedSteps} dari ${stepsCount} selesai`, tone: "bad" };
-  }
-  return { text: `${phase} · ${stepsCount} selesai`, tone: "ok" };
+  return { text: phase, tone: failedSteps > 0 ? "bad" : "ok" };
 }
 
 export function RunPipeline(props: {
@@ -232,7 +243,7 @@ export function RunPipeline(props: {
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs"
         aria-expanded={open}
-        aria-label={`${headline.text}. ${open ? "Tutup detail" : "Lihat detail"}`}
+        aria-label={`${headline.text}. ${open ? "Tutup detail" : "Buka detail"}`}
       >
         <span className="flex min-w-0 items-center gap-2 font-medium">
           {open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
@@ -252,9 +263,8 @@ export function RunPipeline(props: {
                     : "text-emerald-600 dark:text-emerald-400"
             }
           >
-            {status === "done" ? (headline.tone === "bad" ? "Sebagian selesai" : "Selesai") : STATUS_LABEL[status as StepStatus] ?? status}
+            {status === "done" ? "Selesai" : STATUS_LABEL[status as StepStatus] ?? status}
           </span>
-          {!open && <span className="underline underline-offset-2">Lihat detail</span>}
         </span>
       </button>
       {open && (
@@ -280,7 +290,7 @@ export function RunPipeline(props: {
                 </button>
                 {isOpen && (
                   <div className="mx-2 mb-2 space-y-1.5 rounded-lg border border-border/60 bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200">
-                    <p className="break-all text-zinc-400">tool: {s.tool}</p>
+                    <p className="font-semibold text-zinc-300">Aktivitas: {s.label}</p>
                     {s.args && (
                       <div>
                         <p className="text-zinc-500">argumen (tersanitasi):</p>

@@ -3,6 +3,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Logger } from "../lib/logger";
+import { retryMcpRead } from "./recovery";
+import { redactText } from "../lib/redaction";
 
 /**
  * Rosetta is documentation-only: a single shared stdio process serves all
@@ -36,22 +38,34 @@ export class RosettaProcess {
       const transport = new StdioClientTransport({
         command: this.opts.bunExecutable,
         args: [this.opts.rosettaCliPath],
-        env: { DB_PATH: dbPath },
+        env: { DB_PATH: dbPath, ROSETTA_OFFLINE: "1" },
         stderr: "pipe",
       });
+      const stderr: string[] = [];
+      transport.stderr?.on("data", (chunk: Buffer) => {
+        stderr.push(chunk.toString().slice(-2000));
+        if (stderr.length > 10) stderr.shift();
+      });
       const client = new Client({ name: "agent-mikrotik-backend", version: "0.1.0" });
+      client.onclose = () => {
+        if (this.client === client) this.client = null;
+      };
       const connect = client.connect(transport);
-      const timeout = new Promise<never>((_, reject) =>
-        setTimeout(
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
           () => reject(new Error("Rosetta startup timeout")),
           this.opts.startupTimeoutMs ?? 30_000,
-        ),
-      );
+        );
+      });
       try {
         await Promise.race([connect, timeout]);
       } catch (err) {
         await client.close().catch(() => {});
+        this.opts.logger.warn("rosetta startup failed", { stderrTail: redactText(stderr.join("\n")) });
         throw err;
+      } finally {
+        clearTimeout(timer);
       }
       this.opts.logger.info("rosetta process up", { dbPath });
       this.client = client;
@@ -66,6 +80,10 @@ export class RosettaProcess {
   }
 
   async listTools() {
+    return retryMcpRead(() => this.loadTools());
+  }
+
+  private async loadTools() {
     const client = await this.ensureStarted();
     const tools: unknown[] = [];
     let cursor: string | undefined = undefined;
@@ -78,8 +96,10 @@ export class RosettaProcess {
   }
 
   async call(name: string, args: Record<string, unknown>) {
-    const client = await this.ensureStarted();
-    return client.callTool({ name, arguments: args });
+    return retryMcpRead(async () => {
+      const client = await this.ensureStarted();
+      return client.callTool({ name, arguments: args });
+    });
   }
 
   async shutdown() {

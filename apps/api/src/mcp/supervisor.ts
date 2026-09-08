@@ -51,7 +51,7 @@ interface SupervisedEntry {
 export class McpSupervisor {
   private children = new Map<string, SupervisedEntry>();
   private userCounts = new Map<string, number>();
-  private sweeper: ReturnType<typeof setInterval> | null = null;
+  private starting = new Map<string, Promise<McpChild>>();
 
   constructor(
     private plan: (spec: ConnectionSpec) => SpawnPlan,
@@ -64,6 +64,23 @@ export class McpSupervisor {
   }
 
   async getOrSpawn(spec: ConnectionSpec): Promise<McpChild> {
+    const key = this.key(spec);
+    const pending = this.starting.get(key);
+    if (pending) {
+      const child = await pending;
+      if (child.spec.readOnly === spec.readOnly) return child;
+      return this.getOrSpawn(spec);
+    }
+    const operation = this.spawnOrReuse(spec);
+    this.starting.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.starting.get(key) === operation) this.starting.delete(key);
+    }
+  }
+
+  private async spawnOrReuse(spec: ConnectionSpec): Promise<McpChild> {
     const key = this.key(spec);
     const existing = this.children.get(key);
     if (existing) {
@@ -80,7 +97,7 @@ export class McpSupervisor {
       }
     }
 
-    this.enforceLimits(spec.userId);
+    this.enforceLimits(spec.userId, key);
 
     const p = this.plan(spec);
     const transport = new StdioClientTransport({
@@ -99,9 +116,10 @@ export class McpSupervisor {
 
     const client = new Client({ name: "agent-mikrotik-backend", version: "0.1.0" });
     const connect = client.connect(transport);
-    const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("MCP startup timeout")), this.limits.startupTimeoutMs),
-    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("MCP startup timeout")), this.limits.startupTimeoutMs);
+    });
     try {
       await Promise.race([connect, timeout]);
     } catch (err) {
@@ -109,6 +127,8 @@ export class McpSupervisor {
       const tail = stderrLines.slice(-10).join("\n");
       this.logger.warn(`mcp spawn failed for ${key}`, { error: err instanceof Error ? err.message : String(err), stderrTail: tail });
       throw new McpSpawnError(err instanceof Error ? err.message : "spawn failed", tail);
+    } finally {
+      clearTimeout(timer);
     }
 
     const child: McpChild = {
@@ -127,13 +147,14 @@ export class McpSupervisor {
     // Crash handling: if the child dies unexpectedly, mark the entry dead so the
     // next getOrSpawn spawns a fresh one; no unbounded auto-restart while a
     // transaction might be in flight (M6 owns transactional recovery).
-    transport.onclose = () => {
+    // Preserve SDK transport callbacks: they reject pending requests on close.
+    client.onclose = () => {
       if (this.children.get(key) === entry && !entry.dead) {
         entry.dead = true;
         this.logger.warn(`mcp child crashed for ${key}; entry marked dead`);
       }
     };
-    transport.onerror = (err) => {
+    client.onerror = (err) => {
       if (this.children.get(key) === entry && !entry.dead) {
         entry.dead = true;
         this.logger.warn(`mcp child transport error for ${key}`, {
@@ -185,11 +206,12 @@ export class McpSupervisor {
     return this.children.size;
   }
 
-  private enforceLimits(userId: string) {
-    if (this.children.size >= this.limits.total) {
+  private enforceLimits(userId: string, currentKey: string) {
+    const pending = [...this.starting.keys()].filter((key) => key !== currentKey && !this.children.has(key));
+    if (this.children.size + pending.length >= this.limits.total) {
       throw new McpSpawnError("Batas total proses MCP tercapai. Coba lagi nanti.", "");
     }
-    if ((this.userCounts.get(userId) ?? 0) >= this.limits.maxPerUser) {
+    if ((this.userCounts.get(userId) ?? 0) + pending.filter((key) => key.startsWith(`${userId}:`)).length >= this.limits.maxPerUser) {
       throw new McpSpawnError("Batas proses MCP per user tercapai untuk koneksi ini.", "");
     }
   }

@@ -46,9 +46,19 @@ export function recoverLocalState(db: Database) {
     } catch {
       /* ignore */
     }
-    // Sessions persist across restart by design (revoked only on logout/expiry).
     try {
       db.$client.exec("DELETE FROM sessions WHERE expires_at < strftime('%s','now')*1000;");
+    } catch {
+      /* ignore */
+    }
+    // Safety invariant: pending approvals and in-progress backups are closed across server restart
+    try {
+      db.$client.exec("UPDATE approval_requests SET status = 'expired' WHERE status IN ('pending', 'approved');");
+    } catch {
+      /* ignore */
+    }
+    try {
+      db.$client.exec("UPDATE config_backups SET status = 'failed', error_message = 'Interrupted by server restart' WHERE status = 'in_progress';");
     } catch {
       /* ignore */
     }

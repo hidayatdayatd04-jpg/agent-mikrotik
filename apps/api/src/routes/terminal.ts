@@ -40,6 +40,9 @@ export function createTerminalRoutes(deps: {
       rollback: (txId: string, userId: string, meta: { reason: string }) =>
         deps.transactions.rollback(txId, userId, meta),
       getActionCount: (txId: string) => deps.transactions.getActionCount(txId),
+      recordAction: (txId: string) => deps.transactions.recordAction(txId),
+      execInSession: (txId: string, userId: string, command: string) =>
+        deps.transactions.execInSession(txId, userId, command),
     },
   };
 

@@ -1,20 +1,18 @@
-const SENSITIVE_PATTERNS: { pattern: RegExp; label: string }[] = [
-  { pattern: /"(?:password|passwd|passphrase|secret|token|api[-_]?key|private[-_]?key|psk|credential)s?"/gi, label: "key" },
-  { pattern: /\b(?:password|passwd|passphrase|secret|token|api[-_]?key|private[-_]?key|psk)\s*[:=]\s*\S+/gi, label: "pair" },
-];
+const SENSITIVE_KEY =
+  /(?:[\w-]*(?:password|passwd|passphrase|secret|token|key|psk|credential)s?)/i.source;
+
+const SENSITIVE_PAIR_RE = new RegExp(
+  `("?${SENSITIVE_KEY}"?\\s*[:=]\\s*)((?:"(?:\\\\.|[^"\\\\])*")|(?:'(?:\\\\.|[^'\\\\])*')|[^\\s,;}\\]]+)`,
+  "gi",
+);
 
 const REDACTED = "[REDACTED]";
 
 export function redactText(text: string): string {
-  let out = text;
-  for (const { pattern } of SENSITIVE_PATTERNS) {
-    out = out.replace(pattern, (match) => {
-      const sep = match.includes("=") ? "=" : ":";
-      const idx = match.indexOf(sep);
-      return `${match.slice(0, idx + 1)} ${REDACTED}`;
-    });
-  }
-  return out;
+  return text.replace(SENSITIVE_PAIR_RE, (_match, prefix: string, value: string) => {
+    const isQuoted = value.startsWith('"') || value.startsWith("'");
+    return `${prefix}${isQuoted ? `"${REDACTED}"` : REDACTED}`;
+  });
 }
 
 const SENSITIVE_KEY_RE =

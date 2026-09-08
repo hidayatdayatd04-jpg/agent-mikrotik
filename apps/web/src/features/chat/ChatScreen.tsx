@@ -253,13 +253,6 @@ export function ChatScreen(props: { conversationId: string; activeConnector: Con
             </button>
           </div>
         )}
-        {!hasMessages && (
-          <div className="flex items-center gap-2 px-3 py-2">
-            <button type="button" onClick={props.onToggleSidebar} className="rounded-md p-2 hover:bg-muted" aria-label="Buka/tutup sidebar">
-              ☰
-            </button>
-          </div>
-        )}
         <div className="flex-1 min-h-0 overflow-hidden">
           <ChatPanel
             messages={messages.data ?? []}
@@ -277,6 +270,8 @@ export function ChatScreen(props: { conversationId: string; activeConnector: Con
               setTerminalDraft(code);
               setTerminalOpen(true);
             }}
+            activeConnectionId={props.activeConnector?.id ?? null}
+            conversationId={props.conversationId}
           />
         </div>
         <div className="shrink-0">

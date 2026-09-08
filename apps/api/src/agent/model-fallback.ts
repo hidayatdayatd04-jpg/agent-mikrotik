@@ -201,7 +201,9 @@ export function createFallbackChatClient(
     async *stream(input): AsyncGenerator<StreamEvent> {
       const order = orderedCandidates();
       let lastError: unknown = null;
+      let primaryErrorMsg: string | null = null;
       const attempted: string[] = [];
+      const failureList: { key: string; msg: string }[] = [];
 
       for (const cand of order) {
         const key = candidateKey(cand);
@@ -209,13 +211,12 @@ export function createFallbackChatClient(
         const shared = sharedKeyForCandidate(cand);
         const blocked = limiter.isBlocked(key, shared);
         if (blocked.blocked) {
-          lastError = new AppError(
-            "UPSTREAM_ERROR",
-            blocked.isDaily
-              ? `Kuota harian ${key} habis; retry ${blocked.retryAt ?? "menunggu reset"}.`
-              : `Rate limit ${key}; retry ${blocked.retryAt ?? "segera"}.`,
-            502,
-          );
+          const blockMsg = blocked.isDaily
+            ? `Kuota harian ${key} habis; retry ${blocked.retryAt ?? "menunggu reset"}.`
+            : `Rate limit ${key}; retry ${blocked.retryAt ?? "segera"}.`;
+          lastError = new AppError("UPSTREAM_ERROR", blockMsg, 502);
+          failureList.push({ key, msg: blockMsg });
+          if (key === primaryKey && !primaryErrorMsg) primaryErrorMsg = blockMsg;
           continue;
         }
         let client: ChatClient;
@@ -223,6 +224,9 @@ export function createFallbackChatClient(
           client = makeClientFor(cand);
         } catch (e) {
           lastError = e;
+          const msg = e instanceof Error ? e.message : String(e);
+          failureList.push({ key, msg });
+          if (key === primaryKey && !primaryErrorMsg) primaryErrorMsg = msg;
           continue;
         }
         try {
@@ -245,6 +249,8 @@ export function createFallbackChatClient(
         } catch (err) {
           lastError = err;
           const msg = err instanceof Error ? err.message : String(err);
+          failureList.push({ key, msg });
+          if (key === primaryKey && !primaryErrorMsg) primaryErrorMsg = msg;
           const status = err instanceof AppError ? err.status : 0;
           const desc = describeStreamFailure(status === 502 || status === 0 ? guessStatus(msg) : status, msg);
           if (!desc.shouldFallback) throw err;
@@ -265,7 +271,16 @@ export function createFallbackChatClient(
         }
         return null;
       })();
-      const reason = lastError instanceof Error ? lastError.message : "Semua provider tidak tersedia.";
+      const primaryDetail = primaryErrorMsg ? `Model utama ${primaryKey}: ${primaryErrorMsg}` : "";
+      const otherFailures = failureList.filter((f) => f.key !== primaryKey);
+      let reason = primaryDetail;
+      if (otherFailures.length > 0) {
+        reason += `${reason ? " | " : ""}Cadangan: ${otherFailures.map((f) => `${f.key} (${f.msg})`).join("; ")}`;
+      }
+      if (!reason) {
+        reason = lastError instanceof Error ? lastError.message : "Semua provider tidak tersedia.";
+      }
+
       const cp = store.save({
         runId: opts.runContext?.runId ?? null,
         conversationId: opts.runContext?.conversationId ?? null,
@@ -280,7 +295,7 @@ export function createFallbackChatClient(
       });
       const waiting = new AppError(
         "UPSTREAM_ERROR",
-        `Semua provider tidak tersedia; task disimpan sebagai checkpoint ${cp.id} dan menunggu kuota${firstBlocked?.retryAt ? ` (retry ${firstBlocked.retryAt})` : ""}. Tidak ada tool tulis yang dijalankan. Detail: ${reason.slice(0, 300)}`,
+        `Semua provider tidak tersedia; task disimpan sebagai checkpoint ${cp.id} dan menunggu kuota${firstBlocked?.retryAt ? ` (retry ${firstBlocked.retryAt})` : ""}. Tidak ada tool tulis yang dijalankan. Detail: ${reason.slice(0, 350)}`,
         502,
       );
       throw waiting;

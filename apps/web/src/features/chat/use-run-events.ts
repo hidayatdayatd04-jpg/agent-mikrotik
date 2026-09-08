@@ -29,7 +29,7 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
   const [txStatus, setTxStatus] = useState<string | null>(null);
   const [queueStatus, setQueueStatus] = useState<string | null>(null);
   const doneRef = useRef(onDone);
-  const finishRef = useRef<() => void>(() => {});
+  const finishRef = useRef<(immediate?: boolean) => void>(() => {});
   const lastSeqRef = useRef(0);
   doneRef.current = onDone;
 
@@ -56,10 +56,14 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
     let confirmed = false;
     let es: EventSource | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let completeTimer: ReturnType<typeof setTimeout> | null = null;
+    let streamTextLength = 0;
 
     const teardown = () => {
       if (retryTimer) clearTimeout(retryTimer);
+      if (completeTimer) clearTimeout(completeTimer);
       retryTimer = null;
+      completeTimer = null;
       try {
         es?.close();
       } catch {
@@ -68,14 +72,34 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
       es = null;
     };
 
-    const confirmDone = () => {
+    const confirmDone = (immediate = false) => {
       if (cancelled || confirmed) return;
-      confirmed = true;
-      teardown();
-      setLive(false);
-      doneRef.current?.();
+      try {
+        es?.close();
+      } catch {}
+      es = null;
+
+      if (immediate || streamTextLength === 0) {
+        if (completeTimer) clearTimeout(completeTimer);
+        confirmed = true;
+        teardown();
+        setLive(false);
+        doneRef.current?.();
+        return;
+      }
+
+      // Allow smooth typewriter to complete its visual typing cadence (~22ms per char)
+      const typingWaitMs = Math.min(2200, Math.max(350, streamTextLength * 22));
+      if (completeTimer) clearTimeout(completeTimer);
+      completeTimer = setTimeout(() => {
+        if (cancelled || confirmed) return;
+        confirmed = true;
+        teardown();
+        setLive(false);
+        doneRef.current?.();
+      }, typingWaitMs);
     };
-    finishRef.current = confirmDone;
+    finishRef.current = (immediate?: boolean) => confirmDone(immediate);
 
     const handlePayload = (type: RunEventDTO["type"], data: string) => {
       if (confirmed) return;
@@ -87,7 +111,9 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
         setEvents((prev) => [...prev, ev]);
         if (ev.type === "message.delta") {
           setQueueStatus(null);
-          setStreamText((prev) => prev + String((ev.payload as { text?: string }).text ?? ""));
+          const chunk = String((ev.payload as { text?: string }).text ?? "");
+          streamTextLength += chunk.length;
+          setStreamText((prev) => prev + chunk);
         } else if (ev.type === "provider.waiting") {
           const p = ev.payload as { waitedMs?: number };
           const secs = Math.max(1, Math.round(Number(p.waitedMs ?? 0) / 1000));
@@ -143,12 +169,13 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
             }
             return next;
           });
+        } else if (ev.type === "run.cancelled") {
+          confirmDone(true);
         } else if (
           ev.type === "run.completed" ||
-          ev.type === "run.failed" ||
-          ev.type === "run.cancelled"
+          ev.type === "run.failed"
         ) {
-          confirmDone();
+          confirmDone(false);
         }
       } catch {
         /* ignore malformed */
@@ -169,7 +196,7 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
         try {
           const parsed = JSON.parse(e.data) as { status?: string };
           if (parsed.status && TERMINAL.includes(parsed.status)) {
-            confirmDone();
+            confirmDone(parsed.status === "cancelled");
           }
         } catch {
           /* ignore non-JSON keepalives */
@@ -179,7 +206,7 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
       // The server only sends `done` for a terminal run (live terminal event
       // or an already-terminal row on (re)connect).
       es.addEventListener("done", () => {
-        confirmDone();
+        confirmDone(false);
       });
 
       for (const type of [
@@ -234,7 +261,7 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
       try {
         const res = await apiFetch<{ run: { id: string; status: string } }>(`/api/runs/${runId}`);
         if (!stopped && TERMINAL.includes(res.run.status)) {
-          finishRef.current();
+          finishRef.current(res.run.status === "cancelled");
         }
       } catch {
         /* SSE remains the primary channel; retry next tick */

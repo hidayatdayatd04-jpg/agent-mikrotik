@@ -11,17 +11,15 @@ import {
   Cpu,
   Lock,
   Settings2,
-  Sparkles,
   Plus,
-  Layers,
-  Globe,
-} from "lucide-react";
+} from "@/components/icons";
 import {
   useAiProviders,
   useToggleAiProvider,
 } from "./chat-hooks";
 import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import { ModelLimitIndicator } from "./ModelLimitIndicator";
+import { ProviderLogo, providerLogoId } from "./provider-logos";
 
 type SettingsTab = "provider" | "safemode" | "about";
 
@@ -238,13 +236,7 @@ export function SettingsPage(props: { initialTab?: SettingsTab; hideHeader?: boo
                               : "bg-muted text-muted-foreground"
                           }`}
                         >
-                          {p.kind === "gemini" ? (
-                            <Sparkles className="size-4.5" />
-                          ) : p.kind === "openrouter" ? (
-                            <Layers className="size-4.5" />
-                          ) : (
-                            <Globe className="size-4.5" />
-                          )}
+                          <ProviderLogo logoId={providerLogoId(p)} alt={p.name} />
                         </div>
                         <div>
                           <div className="flex items-center gap-2">

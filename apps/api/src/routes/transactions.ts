@@ -98,7 +98,7 @@ export function createTransactionRoutes(deps: {
     if (!row) throw new AppError("NOT_FOUND", "Transaksi tidak ditemukan.", 404);
     // reconcile never replays mutations: it probes the router window and
     // closes the books as rolled_back (or unknown when unreadable)
-    const r = await deps.coordinator.reconcile(c.req.param("id"));
+    const r = await deps.coordinator.reconcile(c.req.param("id"), { resolveOrphan: true });
     return c.json(r);
   });
 

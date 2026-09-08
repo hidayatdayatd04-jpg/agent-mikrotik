@@ -1,4 +1,5 @@
 import type { ModelLimitStatus } from "@shared/index";
+import { TriangleAlertIcon } from "@/components/icons";
 
 export function modelLimitLabel(data?: ModelLimitStatus, now = Date.now()): string {
   if (!data) return "Belum diketahui";
@@ -10,6 +11,28 @@ export function modelLimitLabel(data?: ModelLimitStatus, now = Date.now()): stri
 export function ModelLimitIndicator({ data, compact = false }: { data?: ModelLimitStatus; compact?: boolean }) {
   const label = modelLimitLabel(data);
   const fresh = data && Date.now() - Date.parse(data.observedAt) <= 15 * 60_000 && (!data.retryAt || Date.parse(data.retryAt) > Date.now());
+  // Mode ringkas (dropdown chat): tanpa teks, ikon hanya bila limit (harian/mingguan/bulanan)
+  // atau model tidak bisa digunakan (error / cooldown retry / kuota habis).
+  if (compact) {
+    const now = Date.now();
+    const retryPending = !!data?.retryAt && Date.parse(data.retryAt) > now;
+    const windowExhausted =
+      (!!data && typeof data.requestsLimit === "number" && typeof data.requestsRemaining === "number" && data.requestsLimit > 0 && data.requestsRemaining <= 0) ||
+      (!!data && typeof data.tokensLimit === "number" && typeof data.tokensRemaining === "number" && data.tokensLimit > 0 && data.tokensRemaining <= 0) ||
+      (!!data && typeof data.dailyLimit === "number" && typeof data.dailyRemaining === "number" && data.dailyLimit > 0 && data.dailyRemaining <= 0);
+    const unusable = !!data && (data.status === "limited" || data.status === "error" || !!data.isDailyQuotaExhausted || retryPending || windowExhausted);
+    if (!unusable) return null;
+    return (
+      <span
+        title={label}
+        aria-label={label}
+        role="img"
+        className={`inline-flex shrink-0 items-center ${data?.status === "error" ? "text-destructive" : "text-amber-500"}`}
+      >
+        <TriangleAlertIcon className="size-3.5" />
+      </span>
+    );
+  }
   return <div className="space-y-1 text-[10px] font-sans font-normal text-muted-foreground">
     <span className={fresh && data.status === "limited" ? "text-amber-600 dark:text-amber-400" : ""}>{label}</span>
     {!compact && <>

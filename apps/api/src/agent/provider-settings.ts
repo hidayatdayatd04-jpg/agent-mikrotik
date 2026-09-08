@@ -561,42 +561,47 @@ export function createProviderSettingsService(deps: { db: Database; keyRing: Key
       }
     };
 
-    // Primer dulu bila diminta
-    if (primary?.providerId || primary?.model) {
-      const primaries = rows.filter((r) => {
+    // Tentukan provider target bila user meminta provider/model spesifik
+    let targetProviderId = primary?.providerId;
+    if (!targetProviderId && primary?.model) {
+      const match = rows.find((r) => {
         if (!r.enabled) return false;
-        if (primary.providerId && r.id !== primary.providerId) return false;
-        if (primary.model) {
-          if (r.activeModel === primary.model) return true;
-          try {
-            const list: string[] = Array.isArray(r.models) ? (r.models as string[]) : JSON.parse(r.models as string);
-            return list.includes(primary.model);
-          } catch {
-            return false;
-          }
+        if (r.activeModel === primary.model) return true;
+        try {
+          const list: string[] = Array.isArray(r.models) ? (r.models as string[]) : JSON.parse(r.models as string);
+          return list.includes(primary.model!);
+        } catch {
+          return false;
         }
-        return true;
       });
-      for (const r of primaries) {
-        const list: string[] = Array.isArray(r.models) ? (r.models as string[]) : (() => { try { return JSON.parse(r.models as string); } catch { return [r.activeModel]; } })();
-        const ordered = primary.model
-          ? [primary.model, ...list.filter((m) => m !== primary.model)]
-          : [r.activeModel, ...list.filter((m) => m !== r.activeModel)];
-        pushRow(r, ordered);
-      }
+      if (match) targetProviderId = match.id;
     }
+
+    // Jika user secara spesifik memilih provider/model, isolasi kandidat HANYA pada provider tersebut
+    // (jangan pernah membocorkan fallback ke provider lain yang tidak dipilih user)
+    if (targetProviderId) {
+      const row = rows.find((r) => r.id === targetProviderId && r.enabled);
+      if (row) {
+        const list: string[] = Array.isArray(row.models)
+          ? (row.models as string[])
+          : (() => { try { return JSON.parse(row.models as string); } catch { return [row.activeModel]; } })();
+        const ordered = primary?.model
+          ? [primary.model, ...list.filter((m) => m !== primary.model)]
+          : [row.activeModel, ...list.filter((m) => m !== row.activeModel)];
+        pushRow(row, ordered);
+      }
+      return out;
+    }
+
+    // Default umum jika tidak ada provider spesifik: urutkan semua provider yang enabled
     for (const r of rows) {
-      if (primary?.providerId && r.id === primary.providerId) continue; // sudah ditambahkan
+      if (!r.enabled) continue;
       const list: string[] = Array.isArray(r.models) ? (r.models as string[]) : (() => { try { return JSON.parse(r.models as string); } catch { return [r.activeModel]; } })();
-      if (primary?.model && list.includes(primary.model) && r.enabled) continue; // model primer sudah di atas
       const ordered = [r.activeModel, ...list.filter((m) => m !== r.activeModel)];
       // Hindari duplikat modelKey yang sudah ada
       const existingKeys = new Set(out.map((c) => `${c.providerKind}:${c.model}`));
       const filtered = ordered.filter((m) => !existingKeys.has(`${r.kind}:${m}`));
       if (filtered.length > 0) pushRow(r, filtered);
-      else if (out.length === 0 && filtered.length === 0) {
-        // fallback: tetap sertakan bila belum ada kandidat sama sekali
-      }
     }
     return out;
   }

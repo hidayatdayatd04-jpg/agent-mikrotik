@@ -1,4 +1,3 @@
-import { Client } from "ssh2";
 import { and, eq } from "drizzle-orm";
 import type { Database } from "../db";
 import { routerConnections, terminalCommands, terminalSessions } from "../db/schema";
@@ -7,6 +6,8 @@ import { redactText } from "../lib/redaction";
 import type { Logger } from "../lib/logger";
 import { applySafetyDefaults, classifyBatch, isLocalCommand } from "./terminal-classifier";
 import { recordActivity } from "./activity";
+import { sshExec } from "./ssh-exec";
+import { isMcpConnectionError } from "../mcp/recovery";
 
 /** Serialize execution against the same physical router (user terminal vs AI runs). */
 const routerLocks = new Map<string, string>(); // routerKey -> owner (sessionId or runId)
@@ -30,6 +31,7 @@ export function routerLockOwner(key: string): string | null {
 }
 
 export interface TerminalDeps {
+  execSsh?: (opts: Parameters<typeof sshExec>[0]) => ReturnType<typeof sshExec>;
   db: Database;
   logger: Logger;
   decryptCredential: (userId: string, connectionId: string) => Promise<string>;
@@ -39,67 +41,9 @@ export interface TerminalDeps {
     commit: (txId: string, userId: string) => Promise<{ state: string }>;
     rollback: (txId: string, userId: string, meta: { reason: string }) => Promise<{ state: string }>;
     getActionCount: (txId: string) => number;
+    recordAction?: (txId: string) => void;
+    execInSession?: (txId: string, userId: string, command: string) => Promise<{ output: string }>;
   };
-}
-
-function sshExec(opts: { host: string; port: number; username: string; password: string; command: string; timeoutMs: number }): Promise<{ output: string; exitCode: number | null; durationMs: number }> {
-  return new Promise((resolve, reject) => {
-    const conn = new Client();
-    const started = Date.now();
-    let output = "";
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        try {
-          conn.end();
-        } catch {
-          /* ignore */
-        }
-        reject(new AppError("SSH_TIMEOUT", "SSH timeout saat eksekusi terminal.", 504));
-      }
-    }, opts.timeoutMs);
-    conn
-      .on("ready", () => {
-        conn.exec(opts.command, (err, stream) => {
-          if (err) {
-            clearTimeout(timer);
-            settled = true;
-            conn.end();
-            reject(new AppError("SSH_UNREACHABLE", err.message, 502));
-            return;
-          }
-          stream
-            .on("data", (d: Buffer) => {
-              output += d.toString("utf8");
-              if (output.length > 64_000) {
-                // Stop accumulating; keep bounded (truncated flag handled by caller).
-                output = output.slice(0, 64_000);
-              }
-            })
-            .stderr.on("data", (d: Buffer) => {
-              output += d.toString("utf8");
-              if (output.length > 64_000) output = output.slice(0, 64_000);
-            })
-            .on("close", (code: number | null) => {
-              if (settled) return;
-              settled = true;
-              clearTimeout(timer);
-              conn.end();
-              resolve({ output, exitCode: typeof code === "number" ? code : null, durationMs: Date.now() - started });
-            });
-        });
-      })
-      .on("error", (err: Error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        const msg = err.message ?? String(err);
-        if (/auth|password|denied/i.test(msg)) reject(new AppError("SSH_AUTH_FAILED", "Autentikasi SSH gagal.", 400));
-        else reject(new AppError("SSH_UNREACHABLE", msg.slice(0, 300), 502));
-      })
-      .connect({ host: opts.host, port: opts.port, username: opts.username, password: opts.password, readyTimeout: opts.timeoutMs });
-  });
 }
 
 export async function openTerminalSession(
@@ -183,6 +127,7 @@ export async function submitTerminalCommand(
   void (async () => {
     const started = Date.now();
     let txId: string | null = null;
+    let combined = "";
     try {
       await deps.db.update(terminalCommands).set({ status: "running" }).where(eq(terminalCommands.id, cmdRow!.id));
       const password = await deps.decryptCredential(input.userId, sess.connectionId);
@@ -199,32 +144,39 @@ export async function submitTerminalCommand(
         txId = res.transactionId;
         await deps.db.update(terminalCommands).set({ transactionId: txId }).where(eq(terminalCommands.id, cmdRow!.id));
       }
-      let combined = "";
       let truncated = false;
       for (const c of commands) {
         const { command: execCmd, injected } = applySafetyDefaults(c.raw);
-        const res = await sshExec({ host: conn.host, port: conn.port, username: conn.username, password, command: execCmd, timeoutMs: 30_000 });
-        const redacted = redactText(res.output);
+        let output = "";
+        if (txId) {
+          if (!deps.transactions?.execInSession) throw new AppError("SAFE_MODE_UNAVAILABLE", "Sesi transaksi tidak tersedia untuk eksekusi perintah.", 409);
+          const execRes = await deps.transactions.execInSession(txId, input.userId, execCmd);
+          output = execRes.output;
+        } else {
+          const res = await (deps.execSsh ?? sshExec)({ host: conn.host, port: conn.port, username: conn.username, password, command: execCmd, timeoutMs: 30_000 });
+          output = res.output;
+          if (res.exitCode !== null && res.exitCode !== 0) throw new AppError("UPSTREAM_ERROR", output || `Perintah berakhir dengan kode ${res.exitCode}.`, 502);
+        }
+        if (/^(?:failure:|error:|syntax error|bad command name|expected end of command|no such item)/im.test(output)) throw new AppError("UPSTREAM_ERROR", output, 502);
+        const redacted = redactText(output);
         combined += `$ ${c.raw}\n${injected ? `# ${injected}\n` : ""}${redacted}\n`;
         if (combined.length > 32_000) {
           combined = combined.slice(0, 32_000);
           truncated = true;
-          break;
         }
       }
       const durationMs = Date.now() - started;
       if (txId && deps.transactions) {
-        try {
-          const actions = deps.transactions.getActionCount(txId);
-          const result = actions > 0 ? await deps.transactions.commit(txId, input.userId) : await deps.transactions.rollback(txId, input.userId, { reason: "empty" });
-          combined += `\n[transaksi ${result.state}]`;
-        } catch (e) {
-          combined += `\n[settlement gagal: ${(e as Error).message?.slice(0, 200) ?? "unknown"}]`;
+        const actions = deps.transactions.getActionCount(txId);
+        const result = actions > 0 ? await deps.transactions.commit(txId, input.userId) : await deps.transactions.rollback(txId, input.userId, { reason: "empty" });
+        if ((actions > 0 && result.state !== "committed") || (actions === 0 && result.state !== "rolled_back")) {
+          throw new AppError("TRANSACTION_UNKNOWN", "Hasil transaksi belum terverifikasi. Perubahan belum dapat dinyatakan berhasil.", 409);
         }
+        combined += `\n[transaksi ${result.state}]`;
       }
       await deps.db
         .update(terminalCommands)
-        .set({ status: "completed", exitCode: null, durationMs, outputPreview: combined.slice(0, 8000), truncated, endedAt: new Date() })
+        .set({ status: "completed", exitCode: null, durationMs, outputPreview: combined.slice(0, 8000), truncated: truncated || combined.length > 8000, endedAt: new Date() })
         .where(eq(terminalCommands.id, cmdRow!.id));
       const convId = input.conversationId ?? sess.conversationId;
       if (convId) {
@@ -251,11 +203,13 @@ export async function submitTerminalCommand(
           /* ignore */
         }
       }
-      const msg = err instanceof AppError ? err.message : err instanceof Error ? err.message : String(err);
-      const code = err instanceof AppError ? err.code : "INTERNAL_ERROR";
+      const msg = isMcpConnectionError(err)
+        ? "Koneksi router terputus. Status perubahan perlu diverifikasi sebelum mengulangi perintah."
+        : err instanceof Error ? err.message : String(err);
+      const code = err instanceof AppError ? err.code : isMcpConnectionError(err) ? "SSH_UNREACHABLE" : "INTERNAL_ERROR";
       await deps.db
         .update(terminalCommands)
-        .set({ status: "failed", errorCode: code, durationMs: Date.now() - started, outputPreview: redactText(msg).slice(0, 4000), endedAt: new Date() })
+        .set({ status: "failed", errorCode: code, durationMs: Date.now() - started, outputPreview: redactText(`${combined}\n${msg}`).slice(0, 8000), endedAt: new Date() })
         .where(eq(terminalCommands.id, cmdRow!.id));
     } finally {
       releaseRouter(key, owner);

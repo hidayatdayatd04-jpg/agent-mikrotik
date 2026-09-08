@@ -36,15 +36,15 @@ export const EnvSchema = z.object({
   MCP_IDLE_TIMEOUT_SECONDS: int(900, 30, 86400),
   MAX_MCP_PROCESSES_PER_USER: int(2, 1, 16),
   MAX_MCP_PROCESSES_TOTAL: int(20, 1, 256),
-  AGENT_MAX_STEPS: int(12, 1, 64),
+  AGENT_MAX_STEPS: int(24, 1, 64),
   AGENT_MAX_TOOL_CALLS: int(30, 1, 128),
-  AGENT_RUN_TIMEOUT_MS: int(120000, 5000, 600000),
+  AGENT_RUN_TIMEOUT_MS: int(180000, 5000, 600000),
   MAX_ACTIONS_PER_TRANSACTION: int(20, 1, 200),
-  // Centralized AI rate limiter (aturan #1): default 4 RPM + 150.000 TPM per
+  // Centralized AI rate limiter (aturan #1): default 15 RPM + 150.000 TPM per
   // model untuk seluruh provider (Gemini/OpenRouter/custom). RPD tidak
   // dibatasi lokal. Nilai dapat dioverride via env bila provider resmi lebih rendah.
-  RATE_LIMIT_RPM: int(4, 1, 1000),
-  RATE_LIMIT_TPM: int(150000, 1000, 10000000),
+  RATE_LIMIT_RPM: int(15, 1, 1000),
+  RATE_LIMIT_TPM: int(1000000, 1000, 10000000),
   RATE_LIMIT_MAX_QUEUE: int(50, 1, 1000),
   RATE_LIMIT_MAX_WAIT_MS: int(300000, 1000, 3600000),
   RATE_LIMIT_MAX_RETRIES: int(3, 0, 10),

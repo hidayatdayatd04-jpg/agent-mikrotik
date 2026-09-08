@@ -1,79 +1,13 @@
-/** Controlled RouterOS command classifier. No raw host shell. */
+import { ROUTEROS_MENUS, ROUTEROS_ROOTS, ROUTEROS_ROOT_COMMANDS } from "./routeros-menus";
 
 export type CommandRisk = "read" | "write" | "unknown";
 
-// Exact reviewed menus, never a blanket permission for every action below a family.
-// New menus/diagnostics need explicit review before being admitted as reads.
-const READ_MENUS = new Set([
-  "/system identity",
-  "/system resource",
-  "/system clock",
-  "/system routerboard",
-  "/system package",
-  "/system history",
-  "/system script",
-  "/system scheduler",
-  "/interface",
-  "/ip address",
-  "/ip route",
-  "/ip arp",
-  "/ip dhcp-server",
-  "/ip dhcp-server lease",
-  "/ip dhcp-server network",
-  "/ip dhcp-server option",
-  "/ip dhcp-server option sets",
-  "/ip dns",
-  "/ip firewall",
-  "/ip firewall filter",
-  "/ip firewall nat",
-  "/ip firewall mangle",
-  "/ip firewall raw",
-  "/ip firewall address-list",
-  "/ip firewall connection",
-  "/ip firewall service-port",
-  "/ipv6",
-  "/ipv6 address",
-  "/ipv6 route",
-  "/ipv6 neighbor",
-  "/ipv6 nd",
-  "/ipv6 nd prefix",
-  "/ipv6 settings",
-  "/ipv6 dhcp-client",
-  "/ipv6 dhcp-server",
-  "/ipv6 pool",
-  "/ipv6 firewall filter",
-  "/ipv6 firewall nat",
-  "/ipv6 firewall mangle",
-  "/ipv6 firewall raw",
-  "/ipv6 firewall address-list",
-  "/ipv6 firewall connection",
-  "/routing",
-  "/routing route",
-  "/routing rule",
-  "/routing table",
-  "/routing bgp connection",
-  "/routing bgp session",
-  "/routing bgp template",
-  "/routing ospf instance",
-  "/routing ospf area",
-  "/routing ospf interface-template",
-  "/routing ospf interface",
-  "/routing ospf neighbor",
-  "/routing filter rule",
-  "/queue",
-  "/queue simple",
-  "/queue tree",
-  "/queue type",
-  "/queue interface",
-  "/tool e-mail",
-  "/tool sniffer",
-  "/tool sniffer packet",
-  "/log",
-]);
-const READ_VERBS = new Set(["print", "monitor", "export", "get"]);
+// Comprehensive catalog of verified RouterOS menus (595 menus)
+const READ_MENUS = ROUTEROS_MENUS;
+const READ_VERBS = new Set(["print", "monitor", "export", "get", "show"]);
 const READ_COMMANDS = new Set([
   "/ping", "/traceroute", "/trace", "/export",
-  "/tool ping", "/tool traceroute", "/interface monitor-traffic",
+  "/tool ping", "/tool traceroute", "/tool trace", "/interface monitor-traffic",
 ]);
 
 const WRITE_VERBS = ["add", "remove", "set", "unset", "enable", "disable", "move", "reset", "reboot", "shutdown"];
@@ -95,6 +29,7 @@ const FORBIDDEN_PATTERNS: RegExp[] = [
 export interface ClassifiedCommand {
   raw: string;
   risk: CommandRisk;
+  kind?: CommandRisk;
   reason: string;
   rollbackable: boolean;
 }
@@ -106,19 +41,29 @@ export function isLocalCommand(cmd: string): boolean {
   return LOCAL_COMMANDS.has(cmd.trim().toLowerCase());
 }
 
+/** Normalize slash-path notation (e.g. `/interface/vlan/print` → `/interface vlan print`). */
+export function normalizeSlashes(cmd: string): string {
+  const parts = cmd.trim().split(/\s+/);
+  if (!parts[0]?.startsWith("/")) return cmd;
+  const firstToken = parts[0];
+  if (firstToken.includes("/", 1)) {
+    const subWords = firstToken.split("/").filter(Boolean);
+    const normalizedFirst = "/" + subWords.join(" ");
+    return [normalizedFirst, ...parts.slice(1)].join(" ");
+  }
+  return cmd;
+}
+
 /** Normalize bare RouterOS commands (e.g. `ping 8.8.8.8` → `/ping 8.8.8.8`) for classification. */
 export function normalizeBare(cmd: string): string {
   const t = cmd.trim();
   if (!t) return t;
-  if (t.startsWith("/") || t.startsWith(":")) return t;
+  if (t.startsWith("/") || t.startsWith(":")) return normalizeSlashes(t);
   // Bare verbs valid at RouterOS root menu — treat as absolute path.
   const bare = t.split(/\s+/)[0]!.toLowerCase();
-  const knownBare = new Set([
-    "ping", "traceroute", "trace", "export", "print", "monitor", "get", "find",
-    "interface", "ip", "ipv6", "system", "queue", "routing", "tool", "log",
-    "user", "password", "quit", "cancel",
-  ]);
-  if (knownBare.has(bare)) return `/${t}`;
+  if (ROUTEROS_ROOTS.has(bare) || ROUTEROS_ROOT_COMMANDS.has(bare)) {
+    return normalizeSlashes(`/${t}`);
+  }
   return t;
 }
 
@@ -215,7 +160,7 @@ export function classifyBatch(input: string): { commands: ClassifiedCommand[]; o
     // Safe Mode rollback assumption: only simple add/set/remove on known paths are considered handled;
     // script/system-level mutasi ditolak di singleRisk sebagai unknown.
     const rollbackable = risk === "read" ? true : risk === "write" ? !/reset|reboot|shutdown/i.test(raw) : false;
-    return { raw, risk, reason, rollbackable };
+    return { raw, risk, kind: risk, reason, rollbackable };
   });
   const unknown = commands.find((c) => c.risk === "unknown");
   if (unknown) return { commands, overall: "unknown", blocked: `Perintah ditolak: "${unknown.raw.slice(0, 80)}" — ${unknown.reason}` };

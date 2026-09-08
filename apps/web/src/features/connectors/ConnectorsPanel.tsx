@@ -17,7 +17,7 @@ import {
   Copy,
   Check,
   Loader2,
-} from "lucide-react";
+} from "@/components/icons";
 import type { ConnectorDTO } from "@shared/index";
 import {
   useConnectors,

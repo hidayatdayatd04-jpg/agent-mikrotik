@@ -15,6 +15,17 @@ import { createDb, recoverLocalState } from "./db";
 import { checkDatabase } from "./db/health";
 import { createConnectorService } from "./services/connector";
 import { createConnectorRoutes } from "./routes/connectors";
+import { createNetworkMapService } from "./services/network-map";
+import { createNetworkMapRoutes } from "./routes/network-map";
+import { createMonitoringService } from "./services/monitoring";
+import { createMonitoringRoutes } from "./routes/monitoring";
+import { createNotificationService } from "./services/notification";
+import { createNotificationRoutes } from "./routes/notifications";
+import { createBackupService } from "./services/backup";
+import { createBackupRoutes } from "./routes/backups";
+import { createApprovalService } from "./services/approval";
+import { createApprovalRoutes } from "./routes/approvals";
+import { NETWORK_MAP_TOOL } from "./agent/network-map-tool";
 import { createTargetPolicy } from "./services/target-policy";
 import { envKeyRing } from "./lib/crypto";
 import { McpSupervisor } from "./mcp/supervisor";
@@ -80,7 +91,12 @@ import { TransactionCoordinator } from "./transactions/coordinator";
 import { createSafeModeSessionFactory } from "./transactions/mcp-session";
 import { createTransactionRoutes } from "./routes/transactions";
 
-const customTools = normalizeCustomTools(customManifests());
+const networkMap = createNetworkMapService({ connectors, targetPolicy: createTargetPolicy(config.routerAllowedCidrs) });
+const notifications = createNotificationService({ db });
+const monitoring = createMonitoringService({ db, connectors, notifications });
+const backups = createBackupService({ db, connectors });
+const approvals = createApprovalService({ db, backups, notifications });
+const customTools = [...normalizeCustomTools(customManifests()), NETWORK_MAP_TOOL];
 const catalogSource = createLiveCatalogSource({
   // system-level children: the supervisor respawns per (user,connection) specs
   // with the right mode when agent runs request them; these cover catalog
@@ -163,6 +179,7 @@ const providerSettings = createProviderSettingsService({ db, keyRing, logger });
 {
   const overrides = parseRateLimitOverrides(config.RATE_LIMIT_OVERRIDES_JSON);
   globalRateLimiter.setDefaults({ rpm: config.RATE_LIMIT_RPM, tpm: config.RATE_LIMIT_TPM });
+  globalRateLimiter.setProviderOverride("gemini", { rpm: 15, tpm: 1_000_000 });
   for (const [k, v] of Object.entries(overrides.providerOverrides)) globalRateLimiter.setProviderOverride(k, v);
   for (const [k, v] of Object.entries(overrides.modelOverrides)) globalRateLimiter.setModelOverride(k, v);
   for (const [k, v] of Object.entries(overrides.sharedOverrides)) globalRateLimiter.setSharedOverride(k, v);
@@ -193,7 +210,7 @@ function makeRateLimitedClient(
   const primary: FallbackCandidate = { providerId: cfg.id ?? cfg.kind, providerKind: cfg.kind, model: cfg.model, enabled: true, apiKey: cfg.apiKey };
   return createFallbackChatClient(primary, fallbackCandidates, base, { limiter: globalRateLimiter, checkpoints: globalCheckpoints, logger, runContext });
 }
-const executeTool = createToolExecutor({ supervisor, connectors, logger });
+const executeTool = createToolExecutor({ supervisor, connectors, logger, networkMap });
 const executeDocsTool = async (input: { fqName: string; args: unknown }): Promise<{ ok: boolean; output: string; errorCode?: string }> => {
   const rawName = input.fqName.includes(":") ? input.fqName.split(":")[1]! : input.fqName;
   try {
@@ -317,6 +334,11 @@ const compactionRoutes = createCompactionRoutes({
 });
 const terminalRoutes = createTerminalRoutes({ db, logger, connectors, transactions: txCoordinator });
 const preferencesRoutes = createPreferencesRoutes({ db, logger });
+const networkMapRoutes = createNetworkMapRoutes(networkMap);
+const monitoringRoutes = createMonitoringRoutes({ monitoring });
+const notificationRoutes = createNotificationRoutes({ notifications });
+const backupRoutes = createBackupRoutes({ backups });
+const approvalRoutes = createApprovalRoutes({ approvals, executeTool });
 app.route("/api/auth", authRoutes);
 app.route("/api/preferences", preferencesRoutes);
 app.route("/api/terminal", terminalRoutes);
@@ -324,6 +346,11 @@ app.route("/api/connectors", connectorRoutes);
 app.route("/api/transactions", transactionRoutes);
 app.route("/api/ai-provider", aiProviderRoutes);
 app.route("/api/attachments", attachmentRoutes);
+app.route("/api/network-map", networkMapRoutes);
+app.route("/api/monitoring", monitoringRoutes);
+app.route("/api/notifications", notificationRoutes);
+app.route("/api/backups", backupRoutes);
+app.route("/api/approvals", approvalRoutes);
 app.route("/", activityRoutes);
 app.route("/", compactionRoutes);
 app.route("/", chatRoutes);

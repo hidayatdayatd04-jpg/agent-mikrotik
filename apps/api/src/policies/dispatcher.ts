@@ -10,6 +10,8 @@ import type { NormalizedTool } from "./normalize";
 export interface PolicySnapshot {
   userId: string;
   connectionId: string;
+  connectionHost?: string;
+  managementInterface?: string;
   /** effective mode for this run (intersection of connector + run intent) */
   mode: "read-only" | "write";
   /** original connector mode from DB — used solely for CAS race detection (defaults to mode) */
@@ -68,6 +70,23 @@ const FORBIDDEN_ARG_NAMES = new Set([
  */
 const SAFE_MODE_LIFECYCLE_TOOLS = new Set(["enable_safe_mode", "commit_safe_mode", "rollback_safe_mode"]);
 
+function findForbiddenArg(val: unknown, depth = 0): string | null {
+  if (depth > 8 || !val || typeof val !== "object") return null;
+  if (Array.isArray(val)) {
+    for (const item of val) {
+      const found = findForbiddenArg(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  for (const [key, child] of Object.entries(val as Record<string, unknown>)) {
+    if (FORBIDDEN_ARG_NAMES.has(key.toLowerCase())) return key;
+    const found = findForbiddenArg(child, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
 export class PolicyDispatcher {
   constructor(
     private deps: {
@@ -91,7 +110,20 @@ export class PolicyDispatcher {
    * an in-flight call holding a stale snapshot.
    */
   async check(input: DispatchCheckInput): Promise<DispatchDecision> {
-    const { workspace, snapshot, toolFqName, args } = input;
+    let args = input.args;
+    if (
+      args &&
+      typeof args === "object" &&
+      !Array.isArray(args) &&
+      !("name" in (args as Record<string, unknown>)) &&
+      "arguments" in (args as Record<string, unknown>) &&
+      typeof (args as Record<string, unknown>).arguments === "object" &&
+      (args as Record<string, unknown>).arguments !== null &&
+      !Array.isArray((args as Record<string, unknown>).arguments)
+    ) {
+      args = (args as Record<string, unknown>).arguments;
+    }
+    const { workspace, snapshot, toolFqName } = input;
 
     if (!workspace) {
       return this.deny(snapshot, toolFqName, "FORBIDDEN", "Workspace tidak valid.");
@@ -143,23 +175,28 @@ export class PolicyDispatcher {
     //    call is re-dispatched through check() so the effective tool+args are
     //    validated, not the outer label.
     if (tool.isGateway && effectiveMode === "read-only") {
-      const inner = (args as { name?: string; arguments?: unknown } | null)?.name;
-      if (!inner) {
-        return this.deny(snapshot, toolFqName, "VALIDATION_FAILED", "Gateway tool memerlukan nama tool target.");
-      }
-      // resolve inner name against the same catalog namespace
-      const prefix = toolFqName.split(":")[0];
-      const innerFq = inner.includes(":") ? inner : `${prefix}:${inner}`;
-      const innerTool = catalog.find((t) => t.fqName === innerFq)
-        ?? catalog.find((t) => t.rawName === inner.replace(/^.*:/, ""));
-      if (!innerTool) {
-        // Nama tak dikenal di katalog read-only: bukan soal mode tulis —
-        // model salah nama. WRITE_DISABLED di sini menyesatkan (meminta
-        // toggle Write untuk typo), jadi tolak sebagai TOOL_UNSUPPORTED.
-        return this.deny(snapshot, toolFqName, "TOOL_UNSUPPORTED", `Tool target "${inner}" tidak dikenal dalam katalog run ini. Pilih nama tool dari daftar yang tersedia, jangan mengarang nama.`);
-      }
-      if (innerTool.risk !== "read") {
-        return this.deny(snapshot, toolFqName, "WRITE_DISABLED", `Gateway tidak boleh memanggil tool non-read pada mode Read-Only.`);
+      const isInvokeTool = tool.rawName === "invoke_tool";
+      if (isInvokeTool) {
+        const inner = (args as { name?: string; arguments?: unknown } | null)?.name;
+        if (!inner) {
+          return this.deny(snapshot, toolFqName, "VALIDATION_FAILED", "Gateway tool memerlukan nama tool target.");
+        }
+        // resolve inner name against the same catalog namespace
+        const prefix = toolFqName.split(":")[0];
+        const innerFq = inner.includes(":") ? inner : `${prefix}:${inner}`;
+        const innerTool = catalog.find((t) => t.fqName === innerFq)
+          ?? catalog.find((t) => t.rawName === inner.replace(/^.*:/, ""));
+        if (!innerTool) {
+          // Nama tak dikenal di katalog read-only: bukan soal mode tulis —
+          // model salah nama. WRITE_DISABLED di sini menyesatkan (meminta
+          // toggle Write untuk typo), jadi tolak sebagai TOOL_UNSUPPORTED.
+          return this.deny(snapshot, toolFqName, "TOOL_UNSUPPORTED", `Tool target "${inner}" tidak dikenal dalam katalog run ini. Pilih nama tool dari daftar yang tersedia, jangan mengarang nama.`);
+        }
+        if (innerTool.risk !== "read") {
+          return this.deny(snapshot, toolFqName, "WRITE_DISABLED", `Gateway tidak boleh memanggil tool non-read pada mode Read-Only.`);
+        }
+      } else {
+        return this.deny(snapshot, toolFqName, "WRITE_DISABLED", "Eksekusi command CLI langsung tidak diizinkan pada mode Read-Only.");
       }
     }
     if (tool.isGateway) {
@@ -167,6 +204,12 @@ export class PolicyDispatcher {
       const inner = (args as { name?: string } | null)?.name;
       if (inner && SAFE_MODE_LIFECYCLE_TOOLS.has(inner.replace(/^.*:/, ""))) {
         return this.deny(snapshot, toolFqName, "SAFE_MODE_UNAVAILABLE", "Tool ini hanya dikelola sistem (transaction coordinator), bukan oleh AI.");
+      }
+      if (tool.rawName === "run_routeros_command" || tool.rawName === "run_command" || tool.rawName === "execute_command") {
+        const cmd = String((args as { command?: unknown } | null)?.command ?? "").trim().toLowerCase();
+        if (/safe[-_]?mode/i.test(cmd)) {
+          return this.deny(snapshot, toolFqName, "SAFE_MODE_UNAVAILABLE", "Safe mode hanya dikelola koordinator transaksi.");
+        }
       }
       // Unknown inner tool names (e.g. model mengarang "mt_run_routeros_command")
       // ditolak sebelum eksekusi — MCP hanya mengembalikan teks error yang
@@ -188,11 +231,66 @@ export class PolicyDispatcher {
       return this.deny(snapshot, toolFqName, "VALIDATION_FAILED", v.message ?? "Argumen tool tidak sesuai schema.");
     }
 
-    // 6. forbidden argument names (connection host/credential switching)
+    // 6. forbidden argument names (connection host/credential switching) checked recursively
     if (args && typeof args === "object") {
-      for (const key of Object.keys(args as Record<string, unknown>)) {
-        if (FORBIDDEN_ARG_NAMES.has(key.toLowerCase())) {
-          return this.deny(snapshot, toolFqName, "FORBIDDEN", `Argumen "${key}" tidak boleh diisi model; target diambil dari connector yang diotorisasi.`);
+      const forbidden = findForbiddenArg(args);
+      if (forbidden) {
+        return this.deny(snapshot, toolFqName, "FORBIDDEN", `Argumen "${forbidden}" tidak boleh diisi model; target diambil dari connector yang diotorisasi.`);
+      }
+    }
+
+    // 6.5. Anti-lockout guard: forbid disabling or removing management interface/IP or SSH service
+    if (snapshot.managementInterface || snapshot.connectionHost) {
+      const mgmtIface = snapshot.managementInterface?.toLowerCase();
+      const mgmtHost = snapshot.connectionHost?.toLowerCase();
+
+      // Check raw commands
+      if (tool.rawName === "run_routeros_command" || tool.rawName === "run_command" || tool.rawName === "execute_command") {
+        const cmd = String((args as { command?: unknown } | null)?.command ?? "").trim().toLowerCase();
+
+        // Blocking disabling SSH service
+        if (/^\/?ip\s+service\s+(set\b.*ssh.*disabled=yes|disable\b.*ssh)/i.test(cmd)) {
+          return this.deny(snapshot, toolFqName, "FORBIDDEN", "Ditolak untuk mencegah lockout: Menonaktifkan service SSH akan memutus koneksi manajemen.");
+        }
+
+        // Blocking disabling/removing management interface
+        if (mgmtIface) {
+          const ifaceRegex = new RegExp(`^\\/?interface\\s+(set\\b.*disabled=yes|disable\\b).*\\b${mgmtIface}\\b`, "i");
+          if (ifaceRegex.test(cmd) || (cmd.includes(mgmtIface) && /^\/?interface\s+(disable|set\b.*disabled=yes)/i.test(cmd))) {
+            return this.deny(
+              snapshot,
+              toolFqName,
+              "FORBIDDEN",
+              `Perintah ditolak untuk mencegah lockout: Interface "${snapshot.managementInterface}" adalah jalur koneksi aktif agen (${snapshot.connectionHost ?? "router"}). Menonaktifkannya akan memutus komunikasi secara permanen. Untuk mematikan internet dengan aman, pasang firewall filter drop di chain forward (contoh: /ip firewall filter add chain=forward action=drop comment="Blokir internet klien").`,
+            );
+          }
+        }
+
+        // Blocking disabling/removing connection IP
+        if (mgmtHost) {
+          if (cmd.includes(mgmtHost) && /^\/?ip\s+address\s+(disable|remove|set\b.*disabled=yes)/i.test(cmd)) {
+            return this.deny(
+              snapshot,
+              toolFqName,
+              "FORBIDDEN",
+              `Perintah ditolak untuk mencegah lockout: Alamat IP "${snapshot.connectionHost}" adalah IP koneksi aktif agen.`,
+            );
+          }
+        }
+      }
+
+      // Check structured tools
+      if (mgmtIface) {
+        const a = (args ?? {}) as Record<string, unknown>;
+        const targetIface = String(a.interface ?? a.name ?? a.interface_name ?? "").toLowerCase();
+        const isDisabling = a.disabled === true || a.disabled === "yes" || tool.rawName.includes("disable");
+        if (tool.rawName.includes("interface") && targetIface === mgmtIface && isDisabling) {
+          return this.deny(
+            snapshot,
+            toolFqName,
+            "FORBIDDEN",
+            `Operasi ditolak untuk mencegah lockout: Interface "${snapshot.managementInterface}" adalah jalur koneksi aktif agen (${snapshot.connectionHost ?? "router"}). Untuk mematikan internet, pasang firewall filter drop pada chain forward.`,
+          );
         }
       }
     }

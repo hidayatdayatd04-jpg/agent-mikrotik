@@ -46,6 +46,8 @@ export interface SafeModeSession {
   rollback(): Promise<void>;
   /** probe: is the safe-mode window still open? */
   status(): Promise<"active" | "closed" | "unknown">;
+  /** executes a command within the safe-mode session */
+  exec?(command: string): Promise<{ output: string }>;
 }
 
 /** Connection context the session opener needs to bind a child MCP process. */
@@ -278,6 +280,19 @@ export class TransactionCoordinator {
     return this.actionCount.get(txId) ?? 0;
   }
 
+  async execInSession(txId: string, userId: string, command: string): Promise<{ output: string }> {
+    const row = await this.require(txId);
+    this.assertOwner(row.lockOwner, userId);
+    await this.assertActive(txId);
+    const session = this.sessions.get(txId);
+    if (!session || !session.exec) {
+      throw new AppError("SAFE_MODE_UNAVAILABLE", "Sesi safe mode tidak mendukung eksekusi command langsung.", 500);
+    }
+    const res = await session.exec(command);
+    this.recordAction(txId);
+    return res;
+  }
+
   /** Before every mutation batch: is the session still alive + safe mode open? */
   async assertActive(txId: string): Promise<void> {
     const row = await this.require(txId);
@@ -377,11 +392,24 @@ export class TransactionCoordinator {
    * Reconciliation after crash/drop: read the router's current safe-mode state
    * and close the books. NEVER replays mutations.
    */
-  async reconcile(txId: string): Promise<{ state: TxState }> {
+  async reconcile(txId: string, opts?: { resolveOrphan?: boolean }): Promise<{ state: TxState }> {
     const row = await this.require(txId);
     if (row.state === "committed" || row.state === "rolled_back") return { state: row.state as TxState };
     const session = this.sessions.get(txId) ?? null;
-    const st = session ? await session.status().catch(() => "unknown" as const) : "unknown";
+    let st: "active" | "closed" | "unknown" = session ? await session.status().catch(() => "unknown" as const) : "unknown";
+    if (st === "unknown" && !session && opts?.resolveOrphan && this.deps.verifyChecks && row.connectionId) {
+      try {
+        const check = await this.deps.verifyChecks({ userId: row.lockOwner ?? "system", connectionId: row.connectionId, routerIdentity: row.routerIdentity ?? "" });
+        if (check.ok) {
+          // The router is live and verified healthy.
+          // Since the previous SSH session died with the crashing process,
+          // RouterOS auto-reverted any uncommitted safe-mode changes.
+          st = "closed";
+        }
+      } catch {
+        st = "unknown";
+      }
+    }
     if (st === "active" && session) {
       // a safe-mode window survived: changes are staged but NOT committed —
       // the safe outcome is rollback, and only the backend may do it
@@ -400,6 +428,27 @@ export class TransactionCoordinator {
     }
     await this.cleanup(txId, row.routerIdentity ?? "");
     return { state: (await this.require(txId)).state as TxState };
+  }
+
+  /**
+   * Reconciles all pending 'unknown' transactions across the database on startup.
+   */
+  async reconcileOrphans(): Promise<number> {
+    const rows = await this.deps.db
+      .select({ id: changeTransactions.id })
+      .from(changeTransactions)
+      .where(eq(changeTransactions.state, "unknown"))
+      .limit(25);
+    let resolved = 0;
+    for (const row of rows) {
+      try {
+        const res = await this.reconcile(row.id, { resolveOrphan: true });
+        if (res.state === "rolled_back" || res.state === "committed") resolved++;
+      } catch (err) {
+        this.deps.logger.warn("startup reconcile failed for tx", { id: row.id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return resolved;
   }
 
   /**

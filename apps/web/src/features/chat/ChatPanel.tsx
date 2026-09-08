@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { ThinkingLogo } from "./ThinkingLogo";
-import { remarkCleanResponse } from "./clean-response";
 import { extractAskBlocks, stripAskBlocks } from "./ask-card";
 import { AskCard } from "./AskCard";
+import { extractApprovalBlocks, stripApprovalBlocks } from "./approval-card";
+import { ApprovalCard } from "./ApprovalCard";
+import { Markdown } from "./Markdown";
 import { Button } from "@/components/ui/button";
 import {
   Check,
@@ -16,9 +16,10 @@ import {
   RotateCcw,
   Send,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 import type { MessageDTO, ActivityEventDTO, RunEventDTO } from "./chat-hooks";
 import { buildRunTimeline } from "./run-timeline";
+import { useSmoothText } from "./use-smooth-text";
 import {
   RunPipeline,
   CompactionNotice,
@@ -28,7 +29,6 @@ import {
   isManualTerminalEvent,
   type PipelineStep,
 } from "./ToolActivity";
-import { CodeBlock } from "./OutputBlocks";
 import { EmptyChatState } from "./EmptyChatState";
 
 export interface ToolActivity {
@@ -70,102 +70,7 @@ function CopyButton({ getText, label = "Salin" }: { getText: () => string; label
   );
 }
 
-/** Strip ANSI/OSC escape sequences from model output before render. */
-function sanitizeTerminalText(text: string): string {
-  return (
-    text
-      .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
-      .replace(/\x1B\[[0-9;?]*[A-Za-z]/g, "")
-      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
-      .slice(0, 20000)
-  );
-}
-
-function Markdown({ text, onSendToTerminal }: { text: string; onSendToTerminal?: (code: string) => void }) {
-  const safe = sanitizeTerminalText(text);
-  return (
-    <div className="chat-markdown prose prose-sm dark:prose-invert max-w-none prose-p:leading-relaxed prose-pre:p-0 prose-pre:bg-transparent prose-pre:rounded-none">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkCleanResponse]}
-        components={{
-          a: ({ href, children }) => {
-            const url = href && /^https?:\/\//i.test(href) ? href : undefined;
-            if (!url) return <>{children}</>;
-            return (
-              <a
-                href={url}
-                target="_blank"
-                rel="noreferrer noopener"
-                className="text-indigo-600 hover:text-indigo-500 underline underline-offset-2 dark:text-indigo-400 font-medium"
-              >
-                {children}
-              </a>
-            );
-          },
-          pre: ({ children }) => {
-            const codeText = extractText(children);
-            return <CodeBlock language={detectLanguage(codeText)} code={codeText} onSendToTerminal={onSendToTerminal} />;
-          },
-          code: ({ className, children, ...props }) => {
-            const isBlock = /language-/.test(className ?? "");
-            if (isBlock) {
-              return (
-                <code className={className} {...props}>
-                  {children}
-                </code>
-              );
-            }
-            return (
-              <code
-                className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.85em] text-foreground font-semibold"
-                {...props}
-              >
-                {children}
-              </code>
-            );
-          },
-          table: ({ children }) => (
-            <div className="my-3 overflow-x-auto rounded-xl border border-border/70">
-              <table className="w-full text-left text-xs">{children}</table>
-            </div>
-          ),
-          th: ({ children }) => (
-            <th className="border-b border-border bg-muted/50 p-2.5 font-semibold text-foreground">
-              {children}
-            </th>
-          ),
-          td: ({ children }) => (
-            <td className="border-b border-border/50 p-2.5 text-muted-foreground last:border-0">
-              {children}
-            </td>
-          ),
-        }}
-      >
-        {safe}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-function detectLanguage(code: string): string {
-  const t = code.trim().toLowerCase();
-  if (t.startsWith("/")) return "RouterOS";
-  if (t.includes("{") && t.includes(":")) return "JSON";
-  if (t.includes("get-") || t.includes("write-host")) return "PowerShell";
-  if (t.includes("#!/bin/bash") || t.startsWith("sudo ")) return "Bash";
-  return "Code";
-}
-
-function extractText(node: unknown): string {
-  if (node == null || typeof node === "boolean") return "";
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(extractText).join("");
-  if (typeof node === "object" && "props" in (node as Record<string, unknown>)) {
-    const props = (node as { props?: { children?: unknown } }).props;
-    return extractText(props?.children);
-  }
-  return "";
-}
+export { Markdown } from "./Markdown";
 
 export function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -173,18 +78,62 @@ export function fmtSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function AssistantBody({ text, onAnswerAsk, onSendToTerminal }: { text: string; onAnswerAsk?: (label: string) => void; onSendToTerminal?: (code: string) => void }) {
+function AssistantBody({
+  text,
+  onAnswerAsk,
+  onSendToTerminal,
+  activeConnectionId,
+  conversationId,
+}: {
+  text: string;
+  onAnswerAsk?: (label: string) => void;
+  onSendToTerminal?: (code: string) => void;
+  activeConnectionId?: string | null;
+  conversationId?: string | null;
+}) {
   const specs = onAnswerAsk ? extractAskBlocks(text) : null;
-  const body = specs ? stripAskBlocks(text) : text;
+  const approvalSpecs = extractApprovalBlocks(text);
+  let body = text;
+  if (specs) body = stripAskBlocks(body);
+  if (approvalSpecs) body = stripApprovalBlocks(body);
   return (
     <>
       {body && <Markdown text={body} onSendToTerminal={onSendToTerminal} />}
+      {approvalSpecs &&
+        approvalSpecs.map((spec, i) => (
+          <ApprovalCard
+            key={i}
+            spec={spec}
+            activeConnectionId={activeConnectionId}
+            conversationId={conversationId}
+          />
+        ))}
       {specs && onAnswerAsk
         ? specs.map((spec, i) => (
             <AskCard key={i} spec={spec} onAnswer={onAnswerAsk} />
           ))
         : null}
     </>
+  );
+}
+
+function LiveTextBlock({
+  text,
+  isLatest,
+  live,
+  onSendToTerminal,
+}: {
+  text: string;
+  isLatest: boolean;
+  live: boolean;
+  onSendToTerminal?: (code: string) => void;
+}) {
+  const { displayedText } = useSmoothText(text, live && isLatest);
+  const clean = stripApprovalBlocks(stripAskBlocks(displayedText));
+  return (
+    <div className="relative">
+      {clean ? <Markdown text={clean} onSendToTerminal={onSendToTerminal} /> : null}
+    </div>
   );
 }
 
@@ -198,10 +147,11 @@ export function ChatPanel(props: {
   queueStatus?: string | null;
   runLive: boolean;
   emptyTitle?: string;
-  onSelectPrompt?: (prompt: string) => void;
   onResendPrompt?: (prompt: string) => void;
   onAnswerAsk?: (label: string) => void;
   onSendToTerminal?: (code: string) => void;
+  activeConnectionId?: string | null;
+  conversationId?: string | null;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -428,12 +378,28 @@ export function ChatPanel(props: {
 
                         {timeline ? timeline.map((block) => (
                           <div key={block.key} className="my-2 first:mt-0 last:mb-0">
-                            {block.kind === "text" ? <AssistantBody text={block.text} onAnswerAsk={props.onAnswerAsk} onSendToTerminal={props.onSendToTerminal} /> : <RunPipeline steps={block.steps ?? [block.step]} defaultOpen={false} overall={overall} />}
+                            {block.kind === "text" ? (
+                              <AssistantBody
+                                text={block.text}
+                                onAnswerAsk={props.onAnswerAsk}
+                                onSendToTerminal={props.onSendToTerminal}
+                                activeConnectionId={props.activeConnectionId}
+                                conversationId={props.conversationId}
+                              />
+                            ) : (
+                              <RunPipeline steps={block.steps ?? [block.step]} defaultOpen={false} overall={overall} />
+                            )}
                           </div>
                         )) : <>
                         {showPipeline && <div className="mb-3"><RunPipeline steps={pipeline!.steps} tx={pipeline!.tx} defaultOpen={false} overall={overall} /></div>}
                         {m.content.text ? (
-                          <AssistantBody text={m.content.text} onAnswerAsk={props.onAnswerAsk} onSendToTerminal={props.onSendToTerminal} />
+                          <AssistantBody
+                            text={m.content.text}
+                            onAnswerAsk={props.onAnswerAsk}
+                            onSendToTerminal={props.onSendToTerminal}
+                            activeConnectionId={props.activeConnectionId}
+                            conversationId={props.conversationId}
+                          />
                         ) : (
                           <span className="text-xs text-muted-foreground">{m.status === "cancelled" ? "Jawaban dihentikan." : "Tidak ada teks jawaban."}</span>
                         )}
@@ -448,19 +414,6 @@ export function ChatPanel(props: {
 
                       <div className="mt-1 flex flex-wrap items-center justify-start gap-2 text-[11px] text-muted-foreground">
                         {m.content.text && <CopyButton getText={() => m.content.text ?? ""} label="Salin Jawaban" />}
-                        {(m.status === "failed" || m.status === "cancelled") && props.onResendPrompt && (
-                          <Button
-                            variant="default"
-                            size="sm"
-                            className="h-7 px-3 text-xs bg-indigo-600 hover:bg-indigo-500 text-white gap-1 rounded-md transition-colors"
-                            onClick={() => {
-                              props.onResendPrompt?.("Lanjutkan pemeriksaan yang belum selesai.");
-                            }}
-                            title="Teruskan sisa pekerjaan memakai hasil tool yang sudah tersimpan"
-                          >
-                            <span>Lanjutkan pemeriksaan</span>
-                          </Button>
-                        )}
                         {props.onResendPrompt && m.status !== "failed" && m.status !== "cancelled" && (
                           <Button
                             variant="ghost"
@@ -478,19 +431,6 @@ export function ChatPanel(props: {
                             <span>Regenerate</span>
                           </Button>
                         )}
-                        {(m.status === "failed" || m.status === "cancelled") && props.onSendToTerminal && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 px-2 text-xs text-indigo-500 hover:text-indigo-400 hover:bg-indigo-500/10 gap-1 rounded-md transition-colors"
-                            onClick={() => {
-                              props.onSendToTerminal?.("/system resource print");
-                            }}
-                            title="Buka status router di terminal"
-                          >
-                            <span>Periksa di Terminal</span>
-                          </Button>
-                        )}
                       </div>
                     </div>
                   )}
@@ -505,35 +445,60 @@ export function ChatPanel(props: {
             );
           })}
 
-          {/* Live pipeline for the in-flight run — attached here, not piled at the end later */}
-          {props.runLive && !props.liveEvents?.length && liveSteps.length > 0 && (
-            <RunPipeline
-              steps={liveSteps}
-              defaultOpen={false}
-              live
-              headerRight={
-                props.txStatus ? <span className="text-[11px] text-muted-foreground">{props.txStatus}</span> : undefined
-              }
-            />
-          )}
-
-          {props.runLive && (props.streamText || props.liveEvents?.some((e) => e.type.startsWith("tool."))) && (
+          {/* Live in-flight assistant turn */}
+          {props.runLive && (props.streamText || props.liveEvents?.some((e) => e.type.startsWith("tool.")) || liveSteps.length > 0) && (
             <div className="flex gap-3 justify-start animate-in fade-in duration-200">
               <div className="flex size-9 shrink-0 select-none items-center justify-center rounded-xl overflow-hidden ring-1 ring-cyan-500/40 bg-card shadow-xs">
                 <img src="/logo.png" alt="MikroTik AI" className="size-full object-contain p-0.5" />
               </div>
               <div className="max-w-[85%] sm:max-w-[80%] rounded-2xl rounded-tl-xs border border-border/70 bg-card/80 px-4 py-3.5 shadow-xs">
-                {props.liveEvents?.length ? buildRunTimeline(props.liveEvents, true).map((block) => (
-                  <div key={block.key} className="my-2 first:mt-0 last:mb-0">
-                    {block.kind === "text" ? <Markdown text={stripAskBlocks(block.text)} onSendToTerminal={props.onSendToTerminal} /> : <RunPipeline steps={block.steps ?? [block.step]} defaultOpen={false} live={(block.steps ?? [block.step]).some((s) => s.status === "running")} />}
-                  </div>
-                )) : <Markdown text={stripAskBlocks(props.streamText)} onSendToTerminal={props.onSendToTerminal} />}
-                <span className="inline-block w-1.5 h-4 bg-cyan-500 animate-pulse ml-1 align-middle" />
+                {props.liveEvents?.length ? (
+                  (() => {
+                    const blocks = buildRunTimeline(props.liveEvents, true);
+                    return blocks.map((block, idx) => {
+                      const isLatest = idx === blocks.length - 1;
+                      return (
+                        <div key={block.key} className="my-2 first:mt-0 last:mb-0">
+                          {block.kind === "text" ? (
+                            <LiveTextBlock
+                              text={block.text}
+                              isLatest={isLatest}
+                              live={props.runLive}
+                              onSendToTerminal={props.onSendToTerminal}
+                            />
+                          ) : (
+                            <RunPipeline
+                              steps={block.steps ?? [block.step]}
+                              defaultOpen={false}
+                              live={(block.steps ?? [block.step]).some((s) => s.status === "running")}
+                            />
+                          )}
+                        </div>
+                      );
+                    });
+                  })()
+                ) : (
+                  <>
+                    {liveSteps.length > 0 && (
+                      <div className="mb-2">
+                        <RunPipeline steps={liveSteps} defaultOpen={false} live />
+                      </div>
+                    )}
+                    {props.streamText ? (
+                      <LiveTextBlock
+                        text={props.streamText}
+                        isLatest={true}
+                        live={props.runLive}
+                        onSendToTerminal={props.onSendToTerminal}
+                      />
+                    ) : null}
+                  </>
+                )}
               </div>
             </div>
           )}
 
-          {props.runLive && (!props.streamText || props.toolActivity.some((tool) => tool.status === "running")) && (
+          {props.runLive && !props.streamText && !props.liveEvents?.some((e) => e.type.startsWith("tool.")) && liveSteps.length === 0 && (
             <div className="py-3" role="status" aria-live="polite">
               <ThinkingLogo />
               {(props.queueStatus || props.txStatus) && (

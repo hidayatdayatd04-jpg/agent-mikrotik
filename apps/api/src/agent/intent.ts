@@ -57,7 +57,7 @@ export function isReadOnlyIntent(text: string): boolean {
   // Mutation verbs: user wants the system to apply changes
   const mutationVerbPatterns = [
     /\b(tambah|tambahkan|add|create|buat|pasang|install)\b/i,
-    /\b(ubah|modifikasi|ganti|update|modify|change|edit)\b/i,
+    /\b(ubah|modifikasi|ganti|update|modify|change|edit|perbaiki|fix|benerin)\b/i,
     /\b(hapus|delete|remove|drop)\b/i,
     /\b(enable|aktifkan|disable|nonaktifkan)\b/i,
     /\b(konfigurasikan|setting|setup|apply|terapkan)\b/i,
@@ -67,11 +67,20 @@ export function isReadOnlyIntent(text: string): boolean {
 
   // Inspection verbs: user wants to view/check/analyze
   const inspectionVerbPatterns = [
+    /\b(jelaskan|tampilkan|terhubung\s+ke)\b/i,
     /\b(cek|periksa|lihat|analisa|analisis|audit|pantau|monitoring|baca)\b/i,
     /\b(check|inspect|show|view|read|list|print|monitor|review|examine)\b/i,
     /\b(bagaimana\s+kondisi|ada\s+apa|kenapa|mengapa)\b/i,
     /\b(status|info|informasi)\s/i,
   ];
+
+  // Compound intention: user wants inspection followed by mutation
+  // e.g. "cek lalu perbaiki", "periksa dan tambahkan", "analisis kemudian ubah"
+  const compoundMutationPattern =
+    /\b(dan|lalu|kemudian|terus|setelah\s+itu|and|then)\s+(?:tolong\s+)?(?:coba\s+)?(?:bisa\s+)?(tambah|tambahkan|add|create|buat|pasang|install|ubah|modifikasi|ganti|update|modify|change|edit|perbaiki|fix|benerin|hapus|delete|remove|enable|aktifkan|disable|nonaktifkan|konfigurasikan|setting|setup|apply|terapkan)\b/i;
+  if (compoundMutationPattern.test(t)) {
+    return false;
+  }
 
   // Find first match position for each category
   const firstMutationMatch = mutationVerbPatterns.reduce((earliest, p) => {
@@ -101,4 +110,3 @@ export function isReadOnlyIntent(text: string): boolean {
   ];
   return inquiryPatterns.some((p) => p.test(t));
 }
-

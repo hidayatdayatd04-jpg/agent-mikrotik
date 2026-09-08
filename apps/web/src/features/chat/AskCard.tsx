@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { Check, MessageCircleQuestion, Send, Sparkles } from "lucide-react";
+import { Check, MessageCircleQuestion, Send } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { isOptionRecommended, type AskSpec } from "./ask-card";
 
@@ -87,13 +87,12 @@ export function AskCard({ spec, onAnswer }: { spec: AskSpec; onAnswer: (label: s
               className="h-6 gap-1 rounded-full px-2 text-[10px] font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 hover:text-amber-500 transition-colors"
               title="Pilih opsi yang direkomendasikan"
             >
-              <Sparkles className="size-3" aria-hidden />
               Terapkan Rekomendasi
             </Button>
           )}
           {!submitted && hasRecommended && allRecommendedSelected && (
             <span className="flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-              <Sparkles className="size-2.5" aria-hidden />
+              <Check className="size-2.5" aria-hidden />
               Rekomendasi terpilih
             </span>
           )}
@@ -136,7 +135,6 @@ export function AskCard({ spec, onAnswer }: { spec: AskSpec; onAnswer: (label: s
                       }`}
                     >
                       {isPicked && <Check className="size-3" aria-hidden />}
-                      {!isPicked && isRec && <Sparkles className="size-2.5 shrink-0" aria-hidden />}
                       {o.label}
                     </Button>
                   );

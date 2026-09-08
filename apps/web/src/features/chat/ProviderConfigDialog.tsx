@@ -20,16 +20,11 @@ import {
   Trash2,
   RefreshCw,
   CheckCircle2,
-  Sparkles,
   Lock,
-  Cpu,
   Loader2,
-} from "lucide-react";
-import {
-  useSaveAiProvider,
-  useDeleteAiProvider,
-  fetchProviderModels,
-} from "./chat-hooks";
+} from "@/components/icons";
+import { useSaveAiProvider, useDeleteAiProvider, fetchProviderModels } from "./chat-hooks";
+import { ProviderLogo, providerLogoId } from "./provider-logos";
 
 export interface ProviderConfigDialogProps {
   open: boolean;
@@ -226,7 +221,10 @@ export function ProviderConfigDialog({
       <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto sm:p-6">
         <DialogHeader>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-indigo-500">
-            <Cpu className="size-4" />
+            <ProviderLogo
+              logoId={providerLogoId({ kind, id: currentProvider.id, name: name || currentProvider.name })}
+              alt={name || currentProvider.name}
+            />
             {isNew ? "Tambah Provider Baru" : "Pengaturan Provider AI"}
           </div>
           <DialogTitle className="text-xl font-bold tracking-tight">
@@ -325,7 +323,6 @@ export function ProviderConfigDialog({
             <div className="flex items-center justify-between">
               <div>
                 <Label className="text-xs font-semibold flex items-center gap-1.5">
-                  <Sparkles className="size-3.5 text-indigo-500" />
                   Kelola Daftar Model ({models.length})
                 </Label>
                 <p className="text-[11px] text-muted-foreground">

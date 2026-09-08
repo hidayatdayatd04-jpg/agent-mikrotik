@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useCreateConnector } from "./connector-hooks";
 import { ApiError } from "@/lib/api";
-import { Server, Eye, EyeOff, Loader2, AlertCircle, Lock } from "lucide-react";
+import { Server, Eye, EyeOff, Loader2, AlertCircle, Lock } from "@/components/icons";
 
 interface Props {
   open: boolean;

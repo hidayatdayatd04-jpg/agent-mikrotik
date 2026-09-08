@@ -45,7 +45,7 @@ export function createChatRoutes(deps: {
   /** Deterministic mock client for unconfigured users. */
   makeMockClient: () => ChatClient;
   /** Executes a dispatched tool on the user's child. */
-  executeTool: (input: { userId: string; connectionId: string; fqName: string; args: unknown }) => Promise<{ ok: boolean; output: string; errorCode?: string }>;
+  executeTool: (input: { userId: string; connectionId: string; fqName: string; args: unknown; retryRead?: boolean }) => Promise<{ ok: boolean; output: string; errorCode?: string }>;
   /** Executes documentation tools via the shared Rosetta process (no router). */
   executeDocsTool: (input: { fqName: string; args: unknown }) => Promise<{ ok: boolean; output: string; errorCode?: string }>;
   /** Builds the system instruction for a run. */
@@ -662,6 +662,8 @@ export function createChatRoutes(deps: {
             policy: {
               userId: workspace.userId,
               connectionId: connectionId ?? "none",
+              connectionHost: conn?.host ?? undefined,
+              managementInterface: (conn as any)?.managementInterface ?? undefined,
               mode: effectiveMode,
               connectorMode: mode,
               runMode: readOnlyRequested ? "read-only" : mode,
@@ -675,11 +677,23 @@ export function createChatRoutes(deps: {
                 return deps.executeDocsTool({ fqName: call.fqName, args: call.args });
               }
               if (connectionId && connectionId !== "none") {
-                return deps.executeTool({ userId: workspace.userId, connectionId, fqName: call.fqName, args: call.args });
+                return deps.executeTool({ userId: workspace.userId, connectionId, fqName: call.fqName, args: call.args, retryRead: call.retryRead });
               }
               return Promise.resolve({ ok: false, output: "Tidak ada router aktif pada percakapan ini.", errorCode: "TOOL_UNSUPPORTED" });
             },
-            systemInstruction: deps.buildInstruction({ mode: effectiveMode, routerLabel, modelLabel: client.modelLabel, txActive: txId !== null, writeBlockNote, memorySummary }),
+            systemInstruction: deps.buildInstruction({
+              mode: effectiveMode,
+              routerLabel,
+              modelLabel: client.modelLabel,
+              txActive: txId !== null,
+              writeBlockNote,
+              memorySummary,
+              rosVersion: (conn as any)?.rosVersion ?? null,
+              boardName: (conn as any)?.boardName ?? null,
+              architecture: (conn as any)?.architecture ?? null,
+              connectionHost: conn?.host ?? null,
+              managementInterface: (conn as any)?.managementInterface ?? null,
+            }),
           },
           (e) => {
             if (["run.completed", "run.failed", "run.cancelled"].includes(e.type)) terminalEvent = e;

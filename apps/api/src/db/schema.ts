@@ -22,6 +22,10 @@ export const routerConnections = sqliteTable(
     keyVersion: integer("key_version").notNull().default(1),
     hostKeyFingerprint: text("host_key_fingerprint"),
     routerIdentity: text("router_identity"),
+    rosVersion: text("ros_version"),
+    boardName: text("board_name"),
+    architecture: text("architecture"),
+    managementInterface: text("management_interface"),
     status: text("status").notNull().default("unverified"),
     lastVerifiedAt: integer("last_verified_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
@@ -398,4 +402,169 @@ export const terminalCommands = sqliteTable(
     endedAt: integer("ended_at", { mode: "timestamp_ms" }),
   },
   (t) => [index("terminal_commands_session_idx").on(t.sessionId, t.createdAt)],
+);
+
+// ── Monitoring ──────────────────────────────────────────────────────────
+export const monitoringSnapshots = sqliteTable(
+  "monitoring_snapshots",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    connectionId: text("connection_id")
+      .notNull()
+      .references(() => routerConnections.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    type: text("type").notNull(), // resource | traffic | interface
+    data: text("data", { mode: "json" }).notNull(),
+    collectedAt: integer("collected_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+  (t) => [
+    index("monitoring_snapshots_conn_time_idx").on(t.connectionId, t.type, t.collectedAt),
+    index("monitoring_snapshots_user_idx").on(t.userId, t.collectedAt),
+  ],
+);
+
+// ── Notifications ───────────────────────────────────────────────────────
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    connectionId: text("connection_id").references(() => routerConnections.id, { onDelete: "set null" }),
+    type: text("type").notNull().default("info"), // info | success | warning | critical
+    category: text("category").notNull(), // router_status | resource | interface | backup | config | agent
+    title: text("title").notNull(),
+    message: text("message").notNull(),
+    read: integer("read", { mode: "boolean" }).notNull().default(false),
+    routerLabel: text("router_label"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    readAt: integer("read_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [
+    index("notifications_user_read_idx").on(t.userId, t.read, t.createdAt),
+    index("notifications_user_time_idx").on(t.userId, t.createdAt),
+    index("notifications_dedup_idx").on(t.userId, t.connectionId, t.category, t.type),
+  ],
+);
+
+export const notificationSettings = sqliteTable(
+  "notification_settings",
+  {
+    userId: text("user_id")
+      .primaryKey()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    cpuThreshold: integer("cpu_threshold").notNull().default(90),
+    ramThreshold: integer("ram_threshold").notNull().default(85),
+    cooldownMs: integer("cooldown_ms").notNull().default(300_000), // 5 minutes
+    enabledCategories: text("enabled_categories", { mode: "json" })
+      .notNull()
+      .$defaultFn(() => ["router_status", "resource", "interface", "backup", "config", "agent"]),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+);
+
+// ── Configuration Backups ───────────────────────────────────────────────
+export const configBackups = sqliteTable(
+  "config_backups",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    connectionId: text("connection_id")
+      .notNull()
+      .references(() => routerConnections.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    type: text("type").notNull().default("export_text"), // export_text | binary_backup
+    routerIdentity: text("router_identity"),
+    rosVersion: text("ros_version"),
+    boardName: text("board_name"),
+    content: text("content"), // redacted export text; null for binary
+    contentHash: text("content_hash"),
+    sizeBytes: integer("size_bytes").notNull().default(0),
+    status: text("status").notNull().default("in_progress"), // completed | failed | in_progress
+    createdBy: text("created_by").notNull().default("user"), // user | system | agent
+    errorMessage: text("error_message"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+  (t) => [
+    index("config_backups_conn_time_idx").on(t.connectionId, t.createdAt),
+    index("config_backups_user_idx").on(t.userId, t.createdAt),
+  ],
+);
+
+export const backupSettings = sqliteTable(
+  "backup_settings",
+  {
+    userId: text("user_id")
+      .primaryKey()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    maxBackupsPerRouter: integer("max_backups_per_router").notNull().default(20),
+    autoBackupBeforeChange: integer("auto_backup_before_change", { mode: "boolean" }).notNull().default(true),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+);
+
+// ── Configuration Preview & Approval ────────────────────────────────────
+export const approvalRequests = sqliteTable(
+  "approval_requests",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    connectionId: text("connection_id")
+      .notNull()
+      .references(() => routerConnections.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => agentRuns.id, { onDelete: "set null" }),
+    conversationId: text("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
+    status: text("status").notNull().default("pending"), // pending | approved | rejected | expired | executed | failed
+    summary: text("summary").notNull(),
+    operations: text("operations", { mode: "json" }).notNull(), // Array of { command, description, risk }
+    riskLevel: text("risk_level").notNull().default("medium"), // low | medium | high | critical
+    impactDescription: text("impact_description"),
+    affectedObjects: text("affected_objects", { mode: "json" }),
+    operationsHash: text("operations_hash").notNull(),
+    approvedOperationsHash: text("approved_operations_hash"),
+    approvedAt: integer("approved_at", { mode: "timestamp_ms" }),
+    rejectedAt: integer("rejected_at", { mode: "timestamp_ms" }),
+    rejectedReason: text("rejected_reason"),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    executedAt: integer("executed_at", { mode: "timestamp_ms" }),
+    executionResult: text("execution_result", { mode: "json" }),
+    executionError: text("execution_error"),
+    preBackupId: text("pre_backup_id"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+  (t) => [
+    index("approval_requests_user_status_idx").on(t.userId, t.status, t.createdAt),
+    index("approval_requests_conn_idx").on(t.connectionId, t.createdAt),
+    index("approval_requests_run_idx").on(t.runId),
+  ],
+);
+
+export const approvalOperationLog = sqliteTable(
+  "approval_operation_log",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    approvalId: text("approval_id")
+      .notNull()
+      .references(() => approvalRequests.id, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    command: text("command").notNull(),
+    status: text("status").notNull().default("pending"), // pending | success | failed | skipped
+    output: text("output"),
+    errorMessage: text("error_message"),
+    durationMs: integer("duration_ms"),
+    executedAt: integer("executed_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [
+    index("approval_op_log_approval_idx").on(t.approvalId, t.seq),
+  ],
 );

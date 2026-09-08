@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,7 +10,6 @@ import {
   Moon,
   Sun,
   PanelLeftClose,
-  PanelLeftOpen,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -20,7 +19,13 @@ import {
   Download,
   Check,
   X,
-} from "lucide-react";
+  User,
+  Settings,
+  LogOut,
+  Network,
+  BarChart3,
+  Bell,
+} from "@/components/icons";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import {
   DropdownMenu,
@@ -47,6 +52,11 @@ import { useConnectors } from "./features/connectors/connector-hooks";
 import { ChatScreen } from "./features/chat/ChatScreen";
 import { SettingsShell } from "./features/settings/SettingsShell";
 import { ChatComposer } from "./features/chat/ChatComposer";
+import { NotificationBell } from "./features/notifications/NotificationBell";
+const NetworkMapPage = lazy(() => import("./features/network-map/NetworkMapPage"));
+const MonitoringDashboard = lazy(() => import("./features/monitoring/MonitoringDashboard"));
+const NotificationsPage = lazy(() => import("./features/notifications/NotificationsPage"));
+const BackupsPage = lazy(() => import("./features/backups/BackupsPage"));
 
 function ThemeToggle({ compact }: { compact?: boolean }) {
   const [dark, setDark] = useState(() =>
@@ -80,6 +90,34 @@ function ThemeToggle({ compact }: { compact?: boolean }) {
     <Button variant="ghost" size="icon" onClick={toggle} className="size-8" aria-label={dark ? "Ganti ke tema terang" : "Ganti ke tema gelap"}>
       {dark ? <Sun className="size-4 text-amber-400" /> : <Moon className="size-4" />}
     </Button>
+  );
+}
+
+function ThemeToggleMenuItem() {
+  const [dark, setDark] = useState(() =>
+    typeof document !== "undefined" ? document.documentElement.classList.contains("dark") : false,
+  );
+  useEffect(() => {
+    const saved = localStorage.getItem("theme");
+    if (saved === "dark" || (!saved && window.matchMedia("(prefers-color-scheme: dark)").matches)) {
+      document.documentElement.classList.add("dark");
+      setDark(true);
+    } else if (saved === "light") {
+      document.documentElement.classList.remove("dark");
+      setDark(false);
+    }
+  }, []);
+  function toggle() {
+    const next = !dark;
+    setDark(next);
+    document.documentElement.classList.toggle("dark", next);
+    localStorage.setItem("theme", next ? "dark" : "light");
+  }
+  return (
+    <DropdownMenuItem onClick={toggle} className="gap-2.5 px-2.5 py-2.5 text-xs font-medium rounded-xl cursor-pointer">
+      {dark ? <Sun className="size-4 text-amber-500" /> : <Moon className="size-4 text-muted-foreground" />}
+      <span>{dark ? "Tema Terang" : "Tema Gelap"}</span>
+    </DropdownMenuItem>
   );
 }
 
@@ -162,7 +200,7 @@ function Shell() {
 
   const conversationId = route.name === "chat" ? route.id : null;
   return (
-    <div className="flex h-svh w-full overflow-hidden bg-background text-foreground">
+    <div className="flex h-svh w-full flex-col overflow-hidden bg-background text-foreground md:flex-row">
       {/* Mobile top bar */}
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-border/60 bg-background/80 px-4 backdrop-blur-md md:hidden">
         <div className="flex items-center gap-2">
@@ -173,8 +211,9 @@ function Shell() {
               </Button>
             </SheetTrigger>
             <SheetContent side="left" className="w-80 p-0">
-              <SheetHeader className="border-b border-border/60 p-4 text-left">
-                <SheetTitle>MikroTik AI Agent</SheetTitle>
+              <SheetHeader className="flex flex-row items-center justify-between border-b border-border/60 px-4 py-3 text-left">
+                <SheetTitle className="text-sm font-semibold">MikroTik AI Agent</SheetTitle>
+                <NotificationBell onNavigate={() => setMobileOpen(false)} />
               </SheetHeader>
               <div className="flex h-[calc(100svh-4rem)] flex-col overflow-hidden">
                 <SidebarContent
@@ -197,16 +236,31 @@ function Shell() {
       {/* Desktop sidebar */}
       {!collapsed ? (
         <aside className="hidden w-[272px] shrink-0 flex-col border-r border-border/60 bg-sidebar/95 md:flex" aria-label="Sidebar chat">
-          <div className="flex items-center justify-between border-b border-border/60 p-3">
+          <div className="flex items-center justify-between border-b border-border/50 px-3.5 py-3">
             <div className="flex items-center gap-2.5">
-              <div className="flex size-8 items-center justify-center overflow-hidden rounded-lg ring-1 ring-cyan-500/40 bg-card">
-                <img src="/logo.png" alt="MikroTik AI" className="size-full object-contain p-0.5" />
+              <div className="flex size-8 items-center justify-center overflow-hidden rounded-xl bg-card p-1 shadow-xs ring-1 ring-cyan-500/30">
+                <img src="/logo.png" alt="MikroTik AI" className="size-full object-contain" />
               </div>
-              <span className="text-sm font-bold">MikroTik AI</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-bold tracking-tight text-foreground">MikroTik AI</span>
+                <span className="rounded-md bg-indigo-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600 dark:text-indigo-400">
+                  Agent
+                </span>
+              </div>
             </div>
-            <Button variant="ghost" size="icon" className="size-7" onClick={() => setCollapsedPersist(true)} aria-label="Tutup sidebar" title="Tutup sidebar">
-              <PanelLeftClose className="size-4" />
-            </Button>
+            <div className="flex items-center gap-1">
+              <NotificationBell onNavigate={() => {}} />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7 rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-all cursor-pointer"
+                onClick={() => setCollapsedPersist(true)}
+                aria-label="Tutup sidebar"
+                title="Tutup sidebar"
+              >
+                <PanelLeftClose className="size-4" />
+              </Button>
+            </div>
           </div>
           <div className="flex min-h-0 flex-1 flex-col">
             <SidebarContent
@@ -221,33 +275,71 @@ function Shell() {
           </div>
         </aside>
       ) : (
-        <aside className="hidden w-14 shrink-0 flex-col items-center border-r border-border/60 bg-sidebar/95 py-3 md:flex" aria-label="Sidebar ringkas">
-          <Button variant="ghost" size="icon" className="size-9" onClick={() => setCollapsedPersist(false)} aria-label="Buka sidebar" title="Buka sidebar">
-            <PanelLeftOpen className="size-4" />
-          </Button>
-          <Button variant="ghost" size="icon" className="size-9" onClick={() => navigate({ name: "chat-new" })} aria-label="Chat baru" title="Chat baru">
-            <Plus className="size-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-9"
-            aria-label="Cari chat"
-            title="Cari chat"
-            onClick={() => {
-              setCollapsedPersist(false);
-              setTimeout(() => document.getElementById("sidebar-search")?.focus(), 50);
-            }}
+        <aside className="hidden w-16 shrink-0 flex-col items-center border-r border-border/60 bg-sidebar/95 py-3.5 md:flex" aria-label="Sidebar ringkas">
+          {/* Website Logo as the sidebar expand button */}
+          <button
+            type="button"
+            onClick={() => setCollapsedPersist(false)}
+            className="group relative flex size-9 items-center justify-center rounded-xl bg-card p-1 shadow-xs ring-1 ring-border/80 transition-all hover:scale-105 hover:ring-cyan-500/60 active:scale-95 cursor-pointer"
+            aria-label="Buka sidebar"
+            title="Buka sidebar (MikroTik AI)"
           >
-            <Search className="size-4" />
-          </Button>
+            <img src="/logo.png" alt="MikroTik AI" className="size-full object-contain transition-transform group-hover:scale-105" />
+            <span className="sr-only">Buka sidebar</span>
+          </button>
+
+          <div className="my-2.5 h-px w-6 bg-border/60" />
+
+          <div className="flex flex-col items-center gap-1.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-9 rounded-xl text-muted-foreground hover:bg-accent hover:text-foreground transition-all cursor-pointer"
+              onClick={() => navigate({ name: "chat-new" })}
+              aria-label="Chat baru (Ctrl+K)"
+              title="Chat baru (Ctrl+K)"
+            >
+              <Plus className="size-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-9 rounded-xl text-muted-foreground hover:bg-accent hover:text-foreground transition-all cursor-pointer"
+              aria-label="Cari percakapan"
+              title="Cari percakapan"
+              onClick={() => {
+                setCollapsedPersist(false);
+                setTimeout(() => document.getElementById("sidebar-search")?.focus(), 60);
+              }}
+            >
+              <Search className="size-4" />
+            </Button>
+            <NotificationBell collapsed onNavigate={() => {}} />
+          </div>
+
           <div className="flex-1" />
           <ProfileAvatar name={profile.displayName} username={profile.username} onLogout={() => void logout()} collapsed />
         </aside>
       )}
 
       <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-        <ChatRoute conversationId={conversationId} onToggleSidebar={() => setCollapsedPersist(!collapsed)} />
+        {route.name === "network-map" ? (
+          <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Memuat Network Map…</div>}>
+            <NetworkMapPage connectionId={route.id} />
+          </Suspense>
+        ) : route.name === "monitoring" ? (
+          <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Memuat Monitoring Dashboard…</div>}>
+            <MonitoringDashboard initialConnectionId={route.id} />
+          </Suspense>
+        ) : route.name === "notifications" ? (
+          <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Memuat Notifikasi…</div>}>
+            <NotificationsPage />
+          </Suspense>
+        ) : route.name === "backups" ? (
+          <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Memuat Backup & Diff…</div>}>
+            <BackupsPage initialConnectionId={route.id} />
+          </Suspense>
+        ) : <ChatRoute conversationId={conversationId} onToggleSidebar={() => setCollapsedPersist(!collapsed)} />}
       </main>
       <Toaster position="top-center" richColors />
     </div>
@@ -279,30 +371,41 @@ function SidebarContent(props: {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="space-y-2 p-3">
+      <div className="space-y-2.5 p-3">
         <button
           type="button"
           onClick={newChat}
-          className="flex w-full items-center justify-between rounded-xl bg-indigo-600 px-3.5 py-2.5 text-sm font-medium text-white hover:bg-indigo-500"
+          className="group relative flex w-full items-center justify-between overflow-hidden rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 px-3.5 py-2.5 text-xs font-semibold text-white shadow-md shadow-indigo-500/20 transition-all duration-150 hover:shadow-indigo-500/35 hover:brightness-105 active:scale-[0.98] cursor-pointer"
         >
           <span className="flex items-center gap-2">
-            <Plus className="size-4" /> Chat baru
+            <Plus className="size-4 transition-transform group-hover:rotate-90" />
+            <span>Chat baru</span>
           </span>
-          <kbd className="hidden rounded-md bg-white/20 px-1.5 py-0.5 font-mono text-[10px] sm:inline">Ctrl+K</kbd>
+          <kbd className="rounded-md bg-white/20 px-1.5 py-0.5 font-mono text-[10px] font-medium tracking-wide text-white/90">Ctrl+K</kbd>
         </button>
         <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/70" />
           <Input
             id="sidebar-search"
             value={props.search}
             onChange={(e) => props.setSearch(e.target.value)}
             placeholder="Cari percakapan…"
-            className="h-8 pl-8 text-xs"
+            className="h-8.5 rounded-xl border-border/50 bg-muted/40 pl-8.5 pr-7 text-xs placeholder:text-muted-foreground/60 focus:bg-background transition-colors"
             aria-label="Cari percakapan"
           />
+          {props.search && (
+            <button
+              type="button"
+              onClick={() => props.setSearch("")}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-muted-foreground hover:text-foreground cursor-pointer"
+              aria-label="Hapus pencarian"
+            >
+              <X className="size-3" />
+            </button>
+          )}
         </div>
       </div>
-      <nav className="flex-1 space-y-3 overflow-y-auto px-2 pb-2" aria-label="Daftar percakapan">
+      <nav className="flex-1 space-y-4 overflow-y-auto px-2 pb-2" aria-label="Daftar percakapan">
         {conversations.isLoading && <p className="px-3 py-4 text-xs text-muted-foreground">Memuat…</p>}
         {conversations.isError && <p className="px-3 py-4 text-xs text-destructive">Gagal memuat daftar chat.</p>}
         {!conversations.isLoading && items.length === 0 && (
@@ -310,8 +413,8 @@ function SidebarContent(props: {
         )}
         {groups.map((g) => (
           <div key={g.label}>
-            <p className="px-2.5 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{g.label}</p>
-            <ul className="space-y-0.5">
+            <p className="px-2.5 pb-1.5 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{g.label}</p>
+            <ul className="space-y-1.5">
               {g.items.map((c) => (
                 <ConversationRow key={c.id} conv={c} active={props.activeId === c.id} onOpen={() => openChat(c.id)} />
               ))}
@@ -319,8 +422,8 @@ function SidebarContent(props: {
           </div>
         ))}
       </nav>
-      <div className="border-t border-border/60 p-2">
-        <ProfileAvatar name={props.profileName} username={props.profileUsername} onLogout={props.onLogout} />
+      <div className="border-t border-border/50 p-2">
+        <ProfileAvatar name={props.profileName} username={props.profileUsername} onLogout={props.onLogout} onNavigate={props.onNavigate} />
       </div>
     </div>
   );
@@ -379,7 +482,7 @@ function ConversationRow({ conv, active, onOpen }: { conv: ConversationDTO; acti
 
   if (editing) {
     return (
-      <li className="flex items-center gap-1 rounded-lg border border-indigo-500 bg-background p-1">
+      <li className="flex items-center gap-1 rounded-xl border border-indigo-500 bg-background p-1">
         <Input value={title} onChange={(e) => setTitle(e.target.value)} className="h-7 text-xs" autoFocus aria-label="Nama percakapan" />
         <Button
           size="icon"
@@ -422,53 +525,67 @@ function ConversationRow({ conv, active, onOpen }: { conv: ConversationDTO; acti
             onOpen();
           }
         }}
-        className={`flex w-full cursor-pointer items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs font-medium ${
-          active ? "bg-card text-foreground ring-1 ring-border/80" : "text-muted-foreground hover:bg-card/60 hover:text-foreground"
+        className={`flex w-full cursor-pointer items-center justify-between gap-2 rounded-xl px-2.5 py-2.5 text-left transition-all ${
+          active
+            ? "bg-accent/80 text-foreground font-medium shadow-xs ring-1 ring-border/70"
+            : "text-muted-foreground hover:bg-accent/40 hover:text-foreground"
         }`}
         title={`${conv.title} · dibuat ${new Date(conv.createdAt).toLocaleString("id-ID")}`}
       >
-        <span className="flex min-w-0 items-center gap-2">
-          <MessageSquare className="size-3.5 shrink-0" />
-          <span className="min-w-0">
-            <span className="block truncate text-[14px]">{conv.title}</span>
-            <span className="block text-[11px] text-muted-foreground">dibuat {new Date(conv.createdAt).toLocaleDateString("id-ID")}</span>
+        <span className="flex min-w-0 items-center gap-2 flex-1">
+          {conv.pinnedAt ? (
+            <Pin className="size-3.5 shrink-0 text-amber-500 fill-amber-500/20" />
+          ) : (
+            <MessageSquare className={`size-3.5 shrink-0 ${active ? "text-indigo-600 dark:text-indigo-400" : "text-muted-foreground/60"}`} />
+          )}
+          <span className="min-w-0 flex-1">
+            <span className={`block truncate text-xs ${active ? "font-semibold text-foreground" : "font-medium"}`}>{conv.title}</span>
+            <span className="block truncate text-[10px] text-muted-foreground/75 mt-1">
+              {new Date(conv.createdAt).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}
+            </span>
           </span>
         </span>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              className="rounded-md p-1 opacity-0 transition-opacity hover:bg-muted group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100"
+              className="rounded-lg p-1 opacity-0 transition-opacity hover:bg-muted group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100 cursor-pointer"
               aria-label={`Menu ${conv.title}`}
               onClick={(e) => e.stopPropagation()}
             >
-              <MoreHorizontal className="size-3.5" />
+              <MoreHorizontal className="size-3.5 text-muted-foreground" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-48">
+          <DropdownMenuContent align="end" className="w-52 rounded-2xl border border-border/60 bg-popover/95 p-1.5 shadow-xl backdrop-blur-md">
             <DropdownMenuItem
               onClick={() => {
                 setTitle(conv.title);
                 setEditing(true);
               }}
+              className="gap-2.5 px-2.5 py-2 text-xs font-medium rounded-xl cursor-pointer"
             >
-              <Pencil className="size-3.5" /> Rename
+              <Pencil className="size-3.5 text-muted-foreground" />
+              <span>Rename</span>
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => void doPin(!conv.pinnedAt)}>
-              {conv.pinnedAt ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />} {conv.pinnedAt ? "Lepas pin" : "Pin"}
+            <DropdownMenuItem onClick={() => void doPin(!conv.pinnedAt)} className="gap-2.5 px-2.5 py-2 text-xs font-medium rounded-xl cursor-pointer">
+              {conv.pinnedAt ? <PinOff className="size-3.5 text-amber-500" /> : <Pin className="size-3.5 text-muted-foreground" />}
+              <span>{conv.pinnedAt ? "Lepas pin" : "Pin"}</span>
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => void doArchive(false).then(() => {})} hidden>
-              Pulihkan
+            <DropdownMenuItem onClick={() => void doArchive(true)} className="gap-2.5 px-2.5 py-2 text-xs font-medium rounded-xl cursor-pointer">
+              <Archive className="size-3.5 text-muted-foreground" />
+              <span>Arsipkan</span>
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => void doArchive(true)}>
-              <Archive className="size-3.5" /> Arsipkan
+            <DropdownMenuItem onClick={() => void doExport()} className="gap-2.5 px-2.5 py-2 text-xs font-medium rounded-xl cursor-pointer">
+              <Download className="size-3.5 text-muted-foreground" />
+              <span>Export .md</span>
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => void doExport()}>
-              <Download className="size-3.5" /> Export .md
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => void doDelete()} className="text-destructive">
-              <Trash2 className="size-3.5" /> Hapus
+            <DropdownMenuSeparator className="my-1" />
+            <DropdownMenuItem
+              onClick={() => void doDelete()}
+              className="gap-2.5 px-2.5 py-2 text-xs font-medium rounded-xl cursor-pointer text-destructive focus:bg-destructive/10 focus:text-destructive"
+            >
+              <Trash2 className="size-3.5 text-destructive" />
+              <span>Hapus</span>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -482,47 +599,133 @@ function ProfileAvatar({
   username,
   onLogout,
   collapsed,
+  onNavigate,
 }: {
   name: string;
   username: string;
   onLogout: () => void;
   collapsed?: boolean;
+  onNavigate?: () => void;
 }) {
+  const route = useRoute();
+  const conversation = useConversation(route.name === "chat" ? route.id : null);
   const initials = (name || username || "MA").slice(0, 2).toUpperCase();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className={`flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left hover:bg-card/60 ${collapsed ? "justify-center px-0" : ""}`}
+          className={
+            collapsed
+              ? "group flex size-9 items-center justify-center rounded-xl border-0 p-0.5 transition-all outline-none hover:bg-accent/70 focus-visible:outline-none active:scale-95 cursor-pointer data-[state=open]:bg-accent/70"
+              : "group flex w-full items-center gap-2.5 rounded-xl border-0 p-2 text-left transition-all outline-none hover:bg-accent/50 focus-visible:outline-none active:scale-[0.99] cursor-pointer data-[state=open]:bg-accent/50"
+          }
           aria-label="Menu profil"
+          data-network-map-active={route.name === "network-map" || undefined}
           title={`${name} (@${username})`}
         >
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-xs font-bold text-white">MA</span>
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 via-indigo-600 to-violet-700 text-[11px] font-bold text-white shadow-xs ring-1 ring-white/20 transition-transform group-hover:scale-105">
+            {initials}
+          </span>
           {!collapsed && (
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-semibold">{name}</span>
-              <span className="block truncate text-[11px] text-muted-foreground">@{username}</span>
-            </span>
+            <>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs font-semibold text-foreground">{name}</span>
+                <span className="block truncate text-[11px] text-muted-foreground">@{username}</span>
+              </span>
+              <MoreHorizontal className="size-4 shrink-0 text-muted-foreground/60 transition-colors group-hover:text-foreground" />
+            </>
           )}
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align={collapsed ? "end" : "start"} side="top" className="w-56">
-        <div className="px-2 py-1.5">
-          <p className="truncate text-xs font-semibold">
-            {initials} · {name}
-          </p>
-          <p className="truncate text-[11px] text-muted-foreground">@{username}</p>
+      <DropdownMenuContent
+        align={collapsed ? "end" : "start"}
+        side="top"
+        sideOffset={8}
+        className="w-56 rounded-2xl border border-border/60 bg-popover/95 p-2 shadow-xl backdrop-blur-md space-y-1"
+      >
+        <div className="flex items-center gap-2.5 px-2.5 py-2">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 via-indigo-600 to-violet-700 text-[11px] font-bold text-white shadow-xs">
+            {initials}
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-semibold leading-tight text-foreground">{name}</p>
+            <p className="truncate text-[11px] text-muted-foreground">@{username}</p>
+          </div>
         </div>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => navigate({ name: "settings", section: "profile" })}>Profil</DropdownMenuItem>
-        <DropdownMenuItem onClick={() => navigate({ name: "settings", section: "connectors" })}>Pengaturan</DropdownMenuItem>
-        <DropdownMenuItem onClick={() => navigate({ name: "settings", section: "appearance" })}>Personalisasi</DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <ThemeToggle compact />
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => navigate({ name: "settings", section: "help" })}>Bantuan</DropdownMenuItem>
-        <DropdownMenuItem onClick={onLogout}>Keluar</DropdownMenuItem>
+        <DropdownMenuSeparator className="my-1.5" />
+        <DropdownMenuItem
+          aria-current={route.name === "network-map" ? "page" : undefined}
+          onClick={() => {
+            navigate({ name: "network-map", id: route.name === "network-map" ? route.id : conversation.data?.activeConnectionId ?? undefined });
+            onNavigate?.();
+          }}
+          className={`gap-2.5 px-2.5 py-2.5 text-xs font-medium rounded-xl cursor-pointer ${route.name === "network-map" ? "bg-accent text-foreground" : ""}`}
+        >
+          <Network className="size-4 text-cyan-600 dark:text-cyan-400" />
+          <span>Network Map</span>
+          {route.name === "network-map" && <Check className="ml-auto size-3.5" />}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          aria-current={route.name === "monitoring" ? "page" : undefined}
+          onClick={() => {
+            navigate({ name: "monitoring", id: route.name === "monitoring" ? route.id : conversation.data?.activeConnectionId ?? undefined });
+            onNavigate?.();
+          }}
+          className={`gap-2.5 px-2.5 py-2.5 text-xs font-medium rounded-xl cursor-pointer ${route.name === "monitoring" ? "bg-accent text-foreground" : ""}`}
+        >
+          <BarChart3 className="size-4 text-emerald-600 dark:text-emerald-400" />
+          <span>Monitoring Dashboard</span>
+          {route.name === "monitoring" && <Check className="ml-auto size-3.5" />}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          aria-current={route.name === "notifications" ? "page" : undefined}
+          onClick={() => {
+            navigate({ name: "notifications" });
+            onNavigate?.();
+          }}
+          className={`gap-2.5 px-2.5 py-2.5 text-xs font-medium rounded-xl cursor-pointer ${route.name === "notifications" ? "bg-accent text-foreground" : ""}`}
+        >
+          <Bell className="size-4 text-rose-500" />
+          <span>Notifikasi</span>
+          {route.name === "notifications" && <Check className="ml-auto size-3.5" />}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          aria-current={route.name === "backups" ? "page" : undefined}
+          onClick={() => {
+            navigate({ name: "backups", id: route.name === "backups" ? route.id : conversation.data?.activeConnectionId ?? undefined });
+            onNavigate?.();
+          }}
+          className={`gap-2.5 px-2.5 py-2.5 text-xs font-medium rounded-xl cursor-pointer ${route.name === "backups" ? "bg-accent text-foreground" : ""}`}
+        >
+          <Archive className="size-4 text-indigo-500" />
+          <span>Backup & Diff</span>
+          {route.name === "backups" && <Check className="ml-auto size-3.5" />}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => navigate({ name: "settings", section: "profile" })}
+          className="gap-2.5 px-2.5 py-2.5 text-xs font-medium rounded-xl cursor-pointer"
+        >
+          <User className="size-4 text-muted-foreground" />
+          <span>Profil</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => navigate({ name: "settings", section: "connectors" })}
+          className="gap-2.5 px-2.5 py-2.5 text-xs font-medium rounded-xl cursor-pointer"
+        >
+          <Settings className="size-4 text-muted-foreground" />
+          <span>Pengaturan</span>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator className="my-1.5" />
+        <ThemeToggleMenuItem />
+        <DropdownMenuSeparator className="my-1.5" />
+        <DropdownMenuItem
+          onClick={onLogout}
+          className="gap-2.5 px-2.5 py-2.5 text-xs font-medium rounded-xl cursor-pointer text-destructive focus:bg-destructive/10 focus:text-destructive"
+        >
+          <LogOut className="size-4 text-destructive" />
+          <span>Keluar</span>
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -546,7 +749,6 @@ function ChatRoute({ conversationId, onToggleSidebar }: { conversationId: string
     return (
       <NewChatView
         draftKey={draftKey}
-        onToggleSidebar={onToggleSidebar}
         onCreated={(id) => navigate({ name: "chat", id })}
         createConversation={createConversation}
       />
@@ -575,12 +777,10 @@ function ChatRoute({ conversationId, onToggleSidebar }: { conversationId: string
 
 function NewChatView({
   draftKey,
-  onToggleSidebar,
   onCreated,
   createConversation,
 }: {
   draftKey: string;
-  onToggleSidebar: () => void;
   onCreated: (id: string) => void;
   createConversation: ReturnType<typeof useCreateConversation>;
 }) {
@@ -606,7 +806,9 @@ function NewChatView({
     }
   }, []);
   const connectors = useConnectors();
-  const selected = (connectors.data ?? []).find((c) => c.id === pendingConnector) ?? null;
+  const selected = (pendingConnector !== null
+    ? (connectors.data ?? []).find((c) => c.id === pendingConnector)
+    : (connectors.data ?? []).find((c) => c.status === "connected") ?? connectors.data?.[0]) ?? null;
 
   useEffect(() => {
     try {
@@ -646,14 +848,12 @@ function NewChatView({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 px-3 py-2">
-        <Button variant="ghost" size="icon" className="size-8" onClick={onToggleSidebar} aria-label="Buka/tutup sidebar">
-          <Menu className="size-4" />
-        </Button>
-      </div>
       <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-        <h1 className="text-xl font-semibold sm:text-2xl">Apa yang ingin Anda kerjakan?</h1>
-        <div className="mt-6 w-full max-w-2xl">
+        <div className="mb-4 flex size-12 items-center justify-center rounded-2xl bg-card p-2 shadow-sm ring-1 ring-border/80">
+          <img src="/logo.png" alt="MikroTik AI" className="size-full object-contain" />
+        </div>
+        <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Apa yang ingin Anda kerjakan?</h1>
+        <div className="mt-8 w-full max-w-2xl">
           <ChatComposer
             running={createConversation.isPending}
             connector={selected}

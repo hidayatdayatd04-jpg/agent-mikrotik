@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Copy, Send } from "lucide-react";
+import { Check, Copy, Send } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 
 export function CodeBlock({ language, code, onSendToTerminal }: { language: string; code: string; onSendToTerminal?: (code: string) => void }) {

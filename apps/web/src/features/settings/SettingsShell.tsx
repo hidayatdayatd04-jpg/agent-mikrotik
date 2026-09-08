@@ -1,4 +1,4 @@
-import { ArrowLeft, Plug, Key, User, Palette, Database, ShieldCheck, Archive, Info, HelpCircle } from "lucide-react";
+import { ArrowLeft, Plug, Key, User, Palette, Database, ShieldCheck, Archive, Info, HelpCircle } from "@/components/icons";
 import { ConnectorsPanel } from "@/features/connectors/ConnectorsPanel";
 import { SettingsPage } from "@/features/chat/SettingsPage";
 import { useArchivedConversations, useConversationActions, usePreferences, useSavePreferences, useCompactionStatus } from "@/features/chat/chat-hooks";

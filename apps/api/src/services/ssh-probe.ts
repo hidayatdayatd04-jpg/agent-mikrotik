@@ -7,6 +7,10 @@ export interface SshProbeResult {
   kind: "auth-failed" | "unreachable" | "timeout" | "refused" | "hostkey-changed" | "ok" | "unknown";
   fingerprint: string | null;
   routerIdentity: string | null;
+  rosVersion?: string | null;
+  boardName?: string | null;
+  architecture?: string | null;
+  managementInterface?: string | null;
   message: string;
 }
 
@@ -28,7 +32,7 @@ function fingerprintOf(key: Buffer): string {
  * Performs an SSH pre-auth + exec probe against a MikroTik router.
  * - always computes the host key fingerprint (pin on first success, verify after)
  * - verifies host key when a pinned fingerprint exists (rejects silent changes)
- * - runs /system identity print to prove management access
+ * - runs /system identity print; /system resource print; /ip address print to extract identity, OS profile, and management interface
  */
 export function probeRouter(opts: SshProbeOptions): Promise<SshProbeResult> {
   return new Promise((resolve) => {
@@ -50,7 +54,7 @@ export function probeRouter(opts: SshProbeOptions): Promise<SshProbeResult> {
     }, opts.timeoutMs);
 
     conn.on("ready", () => {
-      conn.exec("/system identity print", (err, stream) => {
+      conn.exec("/system identity print; /system resource print; /ip address print without-paging", (err, stream) => {
         if (err || !stream) {
           clearTimeout(timer);
           return finish({ ok: false, kind: "unknown", fingerprint: seenFingerprint, routerIdentity: null, message: "Gagal membuka channel SSH." });
@@ -62,12 +66,22 @@ export function probeRouter(opts: SshProbeOptions): Promise<SshProbeResult> {
         (stream as ClientChannel).on("close", () => {
           clearTimeout(timer);
           const identityMatch = out.match(/(?:name|identity):\s*([^\r\n]+)/i);
+          const versionMatch = out.match(/\bversion:\s*([^\r\n]+)/i);
+          const boardMatch = out.match(/\bboard-name:\s*([^\r\n]+)/i);
+          const archMatch = out.match(/\barchitecture-name:\s*([^\r\n]+)/i);
           const routerIdentity = identityMatch?.[1]?.trim() ?? "unknown";
+          const ipEscaped = opts.host.replace(/\./g, "\\.");
+          const ifaceMatch = out.match(new RegExp(`${ipEscaped}/\\d+\\s+\\S+\\s+(\\S+)`));
+          const managementInterface = ifaceMatch?.[1]?.trim() ?? null;
           finish({
             ok: true,
             kind: "ok",
             fingerprint: seenFingerprint,
             routerIdentity,
+            rosVersion: versionMatch?.[1]?.trim() ?? null,
+            boardName: boardMatch?.[1]?.trim() ?? null,
+            architecture: archMatch?.[1]?.trim() ?? null,
+            managementInterface,
             message: "Koneksi SSH berhasil.",
           });
         });

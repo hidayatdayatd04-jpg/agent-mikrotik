@@ -61,7 +61,7 @@ export interface StartRunInput {
   /** Per-run provider client (user-configured provider or mock). */
   client: ChatClient;
   /** Executes a dispatched tool on the user's MCP child; backend-owned. */
-  executeTool: (input: { fqName: string; args: unknown }) => Promise<{ ok: boolean; output: string; errorCode?: string }>;
+  executeTool: (input: { fqName: string; args: unknown; retryRead?: boolean }) => Promise<{ ok: boolean; output: string; errorCode?: string }>;
   /** System instruction with mode/router/doc rules for this run. */
   systemInstruction: string;
   /** Lazily opens Safe Mode transaction only when a mutation is about to run */
@@ -507,7 +507,11 @@ export function createAgentLoop(deps: AgentRunDeps) {
       };
     }
     try {
-      result = await input.executeTool({ fqName, args });
+      result = await input.executeTool({
+        fqName,
+        args,
+        retryRead: decision.tool.risk === "read" && input.policy.transactionState !== "active",
+      });
     } catch (err) {
       result = { ok: false, output: err instanceof Error ? err.message : String(err), errorCode: "INTERNAL_ERROR" };
     }
@@ -833,6 +837,9 @@ export function createAgentLoop(deps: AgentRunDeps) {
         let stepText = "";
         let stepToolCalls: ChatToolCall[] = [];
         let stepFinishReason: string | undefined;
+        let stepPromptTokens = 0;
+        let stepCompletionTokens = 0;
+        let stepSawUsage = false;
         // Temuan 6: propagate deadline as AbortSignal to stream request
         const streamTimeoutMs = Math.max(100, remainingMs - finalizationBufferMs);
         const deadlineSignal = AbortSignal.timeout(streamTimeoutMs);
@@ -869,15 +876,20 @@ export function createAgentLoop(deps: AgentRunDeps) {
           } else if (ev.type === "tool_calls" && ev.toolCalls) {
             stepToolCalls = greetingOnly ? [] : ev.toolCalls;
           } else if (ev.type === "usage" && ev.usage) {
-            lastRequestPromptTokens = Math.max(0, ev.usage.promptTokens || 0);
-            lastRequestCompletionTokens = Math.max(0, ev.usage.completionTokens || 0);
-            promptTokensTotal += lastRequestPromptTokens;
-            completionTokensTotal += lastRequestCompletionTokens;
-            await deps.db.update(agentRuns).set({ usage: usageRecord() }).where(eq(agentRuns.id, input.runId));
+            stepPromptTokens = Math.max(0, ev.usage.promptTokens || 0);
+            stepCompletionTokens = Math.max(0, ev.usage.completionTokens || 0);
+            stepSawUsage = true;
           } else if (ev.type === "done") {
             stepFinishReason = ev.finishReason;
             break;
           }
+        }
+        if (stepSawUsage) {
+          lastRequestPromptTokens = stepPromptTokens;
+          lastRequestCompletionTokens = stepCompletionTokens;
+          promptTokensTotal += stepPromptTokens;
+          completionTokensTotal += stepCompletionTokens;
+          await deps.db.update(agentRuns).set({ usage: usageRecord() }).where(eq(agentRuns.id, input.runId));
         }
         } catch (err) {
           // Deadline abort mid-stream → timeout, not crash
@@ -923,9 +935,31 @@ export function createAgentLoop(deps: AgentRunDeps) {
               toolCallsTotal > 0
                 ? "Provider AI mengakhiri giliran tanpa menyimpulkan hasil tool yang sudah dibaca."
                 : "Provider AI mengakhiri giliran tanpa memberikan teks jawaban atau pemanggilan tool.";
-          } else {
-            chatHistory.push({ role: "assistant", content: stepText });
+            break;
           }
+
+          // Guard anti-berhenti prematur: bila model hanya mengeluarkan kalimat rencana/pengantar
+          // pemeriksaan di step awal (misal: "Saya akan memeriksa interface...", "Mari kita cek...")
+          // tanpa memanggil tool pada giliran ini dan belum ada tool/kartu yang dijalankan,
+          // jangan matikan loop! Teruskan ke giliran berikutnya agar model memanggil tool pembacaan.
+          const isPreambleWithoutTool =
+            toolCallsTotal === 0 &&
+            step < 2 &&
+            !greetingOnly &&
+            providerTools.length > 0 &&
+            /(?:saya akan|akan saya|mari kita|sebentar saya|izinkan saya|saya periksa|saya cek|akan kami)\b/i.test(stepText) &&
+            !/```(?:approval|ask)\b/.test(stepText);
+
+          if (isPreambleWithoutTool) {
+            chatHistory.push({ role: "assistant", content: stepText });
+            chatHistory.push({
+              role: "user",
+              content: "[Sistem: Silakan panggil tool pembacaan router yang diperlukan sekarang untuk memeriksa router.]",
+            });
+            continue;
+          }
+
+          chatHistory.push({ role: "assistant", content: stepText });
           break;
         }
         if (step === deps.limits.maxSteps - 1 && stepToolCalls.length > 0) {
@@ -967,24 +1001,39 @@ export function createAgentLoop(deps: AgentRunDeps) {
           // WAIT for complete arguments: parse JSON; incomplete → typed error result, never executed
           let args: unknown;
           try {
-            args = call.argumentsJson.trim() ? JSON.parse(call.argumentsJson) : {};
+            args = call.argumentsJson && call.argumentsJson.trim() ? JSON.parse(call.argumentsJson) : {};
           } catch {
-            const msg = "Argumen tool bukan JSON lengkap — tidak dieksekusi.";
-            await deps.db
-              .insert(toolExecutions)
-              .values({
-                runId: input.runId,
-                toolCallId: call.id,
-                toolName: call.name,
-                risk: "unknown",
-                sanitizedInput: null,
-                resultSummary: msg,
-                status: "rejected",
-                errorCode: "VALIDATION_FAILED",
-              })
-              .onConflictDoNothing();
-            chatHistory.push({ role: "tool", content: JSON.stringify({ error: "VALIDATION_FAILED", message: msg }), toolCallId: call.id });
-            continue;
+            let recovered = false;
+            if (typeof call.argumentsJson === "string") {
+              const trimmed = call.argumentsJson.trim();
+              const match = trimmed.match(/^\{[\s\S]*?\}(?=\{|$)/);
+              if (match) {
+                try {
+                  args = JSON.parse(match[0]);
+                  recovered = true;
+                } catch {
+                  recovered = false;
+                }
+              }
+            }
+            if (!recovered) {
+              const msg = "Argumen tool bukan JSON lengkap — tidak dieksekusi.";
+              await deps.db
+                .insert(toolExecutions)
+                .values({
+                  runId: input.runId,
+                  toolCallId: call.id,
+                  toolName: call.name,
+                  risk: "unknown",
+                  sanitizedInput: null,
+                  resultSummary: msg,
+                  status: "rejected",
+                  errorCode: "VALIDATION_FAILED",
+                })
+                .onConflictDoNothing();
+              chatHistory.push({ role: "tool", content: JSON.stringify({ error: "VALIDATION_FAILED", message: msg }), toolCallId: call.id });
+              continue;
+            }
           }
           // map provider tool name back to fqName (dots replaced by _ in provider space)
           const fq = catalog.find((t) => t.fqName.replace(/[^A-Za-z0-9_-]/g, "_") === call.name)?.fqName ?? call.name;

@@ -1,0 +1,86 @@
+/* RouterSelector - shared unified design matching NetworkMap */
+.map-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #94a3b8;
+  transition: all 0.2s ease;
+}
+
+.map-dot.online {
+  background: #10b981;
+  box-shadow: 0 0 0 3px #10b98118;
+}
+
+.map-dot.offline {
+  background: #ef4444;
+  box-shadow: 0 0 0 3px #ef444418;
+}
+
+.router-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 300px;
+  max-width: 100%;
+  min-height: 62px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card);
+  color: var(--foreground);
+  cursor: pointer;
+  box-shadow: 0 2px 4px #00000004;
+  text-align: left;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.router-selector:hover,
+.router-selector[data-state=open] {
+  border-color: color-mix(in srgb, #0891b2 50%, var(--border));
+  background: color-mix(in srgb, #0891b2 4%, var(--card));
+  box-shadow: 0 4px 12px -2px #0891b215;
+}
+
+.router-selector:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.router-selector:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.router-selector-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: #0891b212;
+  color: #0891b2;
+  transition: transform 0.15s ease;
+}
+
+.router-selector:hover .router-selector-icon {
+  transform: scale(1.04);
+}
+
+.router-selector-menu {
+  max-width: calc(100vw - 24px);
+  width: 320px;
+  background: var(--popover);
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 25px -5px #00000018, 0 8px 10px -6px #00000010;
+  backdrop-filter: blur(12px);
+}
+
+@media (max-width: 767px) {
+  .router-selector {
+    width: 100%;
+  }
+}

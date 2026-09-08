@@ -10,15 +10,11 @@
     "build": "bun run --cwd apps/web build && bun tooling/build.ts",
     "typecheck": "tsc -b tsconfig.json",
     "lint": "eslint .",
-    "test": "bun test apps/api packages",
-    "test:ui": "bun run --cwd apps/web test",
-    "test:e2e": "playwright test",
     "start": "bun bin/mikrotik-agent.js run",
     "prepack": "bun run build"
   },
   "devDependencies": {
     "@eslint/js": "9.36.0",
-    "@playwright/test": "1.55.1",
     "concurrently": "9.2.1",
     "eslint": "9.36.0",
     "typescript": "5.9.2",

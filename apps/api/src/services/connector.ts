@@ -110,6 +110,10 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
         status: "connected",
         lastVerifiedAt: new Date(),
         routerIdentity: probe.routerIdentity,
+        rosVersion: probe.rosVersion ?? null,
+        boardName: probe.boardName ?? null,
+        architecture: probe.architecture ?? null,
+        managementInterface: probe.managementInterface ?? null,
         hostKeyFingerprint: probe.fingerprint,
       })
       .returning();
@@ -256,7 +260,16 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
     }
     const [updated] = await db
       .update(routerConnections)
-      .set({ status: "connected", lastVerifiedAt: new Date(), updatedAt: new Date() })
+      .set({
+        status: "connected",
+        lastVerifiedAt: new Date(),
+        updatedAt: new Date(),
+        routerIdentity: probe.routerIdentity ?? row.routerIdentity,
+        rosVersion: probe.rosVersion ?? row.rosVersion,
+        boardName: probe.boardName ?? row.boardName,
+        architecture: probe.architecture ?? row.architecture,
+        managementInterface: probe.managementInterface ?? row.managementInterface,
+      })
       .where(eq(routerConnections.id, connectionId))
       .returning();
     // key rotation: re-seal under the current key version when the stored
@@ -379,6 +392,10 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
       hostKeyFingerprint: row.hostKeyFingerprint,
       lastVerifiedAt: row.lastVerifiedAt?.toISOString() ?? null,
       routerIdentity: row.routerIdentity,
+      rosVersion: row.rosVersion ?? null,
+      boardName: row.boardName ?? null,
+      architecture: row.architecture ?? null,
+      managementInterface: row.managementInterface ?? null,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };

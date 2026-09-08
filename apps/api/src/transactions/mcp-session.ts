@@ -10,7 +10,7 @@ import { AppError } from "../lib/errors";
  * the policy dispatcher denies them for model calls — only this adapter, driven
  * by the TransactionCoordinator, may invoke them. All calls go through the SAME
  * child process so the persistent safe-mode shell session stays bound to one
- * connection, as required by the integration contract (docs/integration-contracts.md).
+ * connection, as required by the integration contract.
  */
 export interface SafeModeSessionContext {
   userId: string;
@@ -104,6 +104,10 @@ export function createSafeModeSessionFactory(deps: {
         },
         async rollback() {
           await call("rollback_safe_mode");
+        },
+        async exec(command: string) {
+          const out = await call("run_routeros_command", { command });
+          return { output: out };
         },
         async status() {
           try {

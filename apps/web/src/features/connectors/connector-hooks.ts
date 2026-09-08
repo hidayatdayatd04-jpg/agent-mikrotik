@@ -75,6 +75,15 @@ export function useConnectConnector(id: string) {
   });
 }
 
+export function useConnectAnyConnector() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ connector: ConnectorDTO }>(`/api/connectors/${id}/connect`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["connectors"] }),
+  });
+}
+
 export function useDisconnectConnector(id: string) {
   const qc = useQueryClient();
   return useMutation({

@@ -1,9 +1,0 @@
-{
-  "name": "m0-spike",
-  "private": true,
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "1.26.0",
-    "@usex/mikrotik-mcp": "5.6.0",
-    "@tikoci/rosetta": "0.11.1"
-  }
-}
