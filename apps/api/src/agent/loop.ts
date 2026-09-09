@@ -95,7 +95,7 @@ export function createAgentLoop(deps: AgentRunDeps) {
           counters.finalStatus = "cancelled";
           break;
         }
-        await runAgentStep(stepEnv, {
+        const stepResult = await runAgentStep(stepEnv, {
           step,
           input,
           chatHistory,
@@ -111,7 +111,10 @@ export function createAgentLoop(deps: AgentRunDeps) {
           counters,
           isCancelled: cancelledNow,
         });
-        if (counters.finalStatus !== "completed") break;
+        // "end" = jawaban final sudah ditulis (setara `break` asli): berhenti
+        // agar request berikutnya tidak diawali history berujung assistant
+        // (provider, khususnya Gemini, menolaknya dengan 400).
+        if (stepResult === "end" || counters.finalStatus !== "completed") break;
       }
 
       await finalizeRun(deps, { runId: input.runId, conversationId: input.conversationId, modelLabel: input.client.modelLabel }, counters, emitSeq);

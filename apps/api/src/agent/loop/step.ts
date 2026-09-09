@@ -30,9 +30,25 @@ export interface StepArgs {
   isCancelled: () => boolean;
 }
 
-/** Satu iterasi step: stream → finish/final → eksekusi tools. */
-export async function runAgentStep(env: StepEnv, args: StepArgs): Promise<void> {
+/**
+ * Satu iterasi step: stream → finish/final → eksekusi tools.
+ * Mengembalikan "end" bila run harus berhenti setelah step ini (jawaban
+ * final sudah ditulis — penerus WAJIB break agar request berikutnya tidak
+ * diawali history berujung assistant), "continue" bila loop berlanjut.
+ */
+export async function runAgentStep(env: StepEnv, args: StepArgs): Promise<"end" | "continue"> {
   const { counters: c } = args;
+  // Invarian anti-400: provider (khususnya Gemini) menolak request yang
+  // diakhiri giliran model. chatHistory tidak boleh berujung assistant
+  // saat step dimulai — bila terjadi, gagalkan dengan diagnosis jelas
+  // daripada membakar request yang pasti ditolak provider.
+  const tail = args.chatHistory[args.chatHistory.length - 1];
+  if (tail?.role === "assistant") {
+    c.finalStatus = "failed";
+    c.failCode = "INTERNAL_ERROR";
+    c.failMessage = "Invariant loop dilanggar: riwayat chat berujung pesan assistant sebelum request baru.";
+    return "end";
+  }
   const streamed = await streamStepTurn(env, {
     chatHistory: args.chatHistory,
     providerTools: args.providerTools,
@@ -42,13 +58,13 @@ export async function runAgentStep(env: StepEnv, args: StepArgs): Promise<void> 
     emitSeq: args.emitSeq,
     counters: c,
   });
-  if (streamed.status === "timeout") return;
+  if (streamed.status === "timeout") return "continue";
   // Temuan 6: check deadline after stream completes (clock shifted or slow provider)
   if (Date.now() >= args.deadline) {
     c.finalStatus = "failed";
     c.failCode = "RUN_TIMEOUT";
     c.failMessage = "Deadline tercapai saat respons provider selesai.";
-    return;
+    return "continue";
   }
   const finished = handleStepFinish(c, {
     stepText: streamed.stepText,
@@ -59,7 +75,8 @@ export async function runAgentStep(env: StepEnv, args: StepArgs): Promise<void> 
     providerToolsLength: args.providerTools.length,
     chatHistory: args.chatHistory,
   });
-  if (finished.action !== "tools") return;
+  if (finished.action === "next") return "continue";
+  if (finished.action !== "tools") return "end";
   if (args.step === env.maxSteps - 1 && streamed.stepToolCalls.length > 0) {
     c.finalStatus = "failed";
     c.failCode = "STEP_LIMIT_REACHED";
@@ -79,4 +96,5 @@ export async function runAgentStep(env: StepEnv, args: StepArgs): Promise<void> 
     maxToolCalls: env.maxToolCalls,
     isCancelled: args.isCancelled,
   }, args.emitSeq, c, args.toolState);
+  return "continue";
 }
