@@ -49,6 +49,12 @@ export interface RateLimitedClientOptions {
   limiter?: CentralRateLimiter;
   /** Batas retry untuk 429 rate-limit biasa (bukan kuota harian). Default dari limiter. */
   maxRetries?: number;
+  /**
+   * Sampling temperature untuk presisi tool-calling (null = jangan kirim
+   * parameter; model memakai default-nya). Nilai rendah (≈0.15) membuat
+   * pemilihan tool & argumen konsisten antar turn.
+   */
+  temperature?: number | null;
 }
 
 /** Ringkasan diagnostik aman (tanpa isi pesan, tanpa kunci) untuk log per-request. */

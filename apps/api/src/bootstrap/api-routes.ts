@@ -52,7 +52,7 @@ export function mountApiRoutes(app: Hono<HonoEnv>) {
       const cfg = await providerSettings.resolveForRun(userId, {});
       if (!cfg) return null;
       // Background task wajib lewat limiter terpusat yang sama (#1).
-      return { client: createOpenAiCompatibleClient(cfg, logger, { limiter: globalRateLimiter }), model: cfg.model, provider: cfg.kind };
+      return { client: createOpenAiCompatibleClient(cfg, logger, { limiter: globalRateLimiter, temperature: config.AI_TEMPERATURE }), model: cfg.model, provider: cfg.kind };
     },
   });
   const terminalRoutes = createTerminalRoutes({ db, logger, connectors, transactions: txCoordinator });

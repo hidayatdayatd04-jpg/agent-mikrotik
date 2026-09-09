@@ -14,6 +14,16 @@ const int = (def: number, min: number, max: number) =>
     })
     .transform((v) => Math.floor(v as number));
 
+const num = (def: number, min: number, max: number) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? def : Number(v)))
+    .refine((v) => typeof v === "number" && Number.isFinite(v) && v >= min && v <= max, {
+      message: `must be a number between ${min} and ${max}`,
+    })
+    .transform((v) => v as number);
+
 export const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   API_PORT: int(3001, 1, 65535),
@@ -25,6 +35,11 @@ export const EnvSchema = z.object({
   AI_PROVIDER_BASE_URL: z.string().optional(),
   AI_PROVIDER_MODEL: z.string().optional(),
   AI_PROVIDER_API_KEY: z.string().optional(),
+  // Sampling temperature untuk request chat agent (tool-calling presisi butuh
+  // nilai rendah agar argumen tool konsisten; kreativitas jawaban dijaga via
+  // instruksi, bukan sampling). 0 = deterministik penuh (tidak disarankan:
+  // model bisa mengulang pola yang sama saat retry).
+  AI_TEMPERATURE: num(0.15, 0, 2),
 
   UPLOAD_MAX_BYTES: int(10485760, 1, 100 * 1024 * 1024),
   UPLOAD_MAX_FILES_PER_MESSAGE: int(4, 1, 16),

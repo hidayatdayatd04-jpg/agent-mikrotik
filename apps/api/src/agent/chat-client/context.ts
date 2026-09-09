@@ -40,4 +40,6 @@ export interface TurnCtx {
   endpointHost: string;
   wireMessages: ProviderWireMessage[];
   wireTools: ChatToolDefinition[];
+  /** Temperature sampling (null = tidak dikirim; pakai default model). */
+  temperature: number | null;
 }

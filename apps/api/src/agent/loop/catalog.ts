@@ -27,6 +27,6 @@ export async function buildRunCatalog(
   const catalog = input.connectionId
     ? fullCatalog
     : fullCatalog.filter((t) => t.fqName.startsWith("docs:") || t.fqName.startsWith("web:") || t.fqName === CONNECTION_CHECK_FQ);
-  const providerTools = toProviderTools(selectRelevantTools(catalog, input.userText));
+  const providerTools = toProviderTools(selectRelevantTools(catalog, input.userText), input.userText);
   return { greetingOnly, catalog, providerTools };
 }

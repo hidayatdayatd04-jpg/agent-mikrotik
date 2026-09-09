@@ -1,5 +1,6 @@
 import type { NormalizedTool } from "../../policies/normalize";
 import { CONNECTION_CHECK_FQ } from "./connection";
+import { extractQueryKeywords } from "./ranking-synonyms";
 
 /**
  * Batas tool per request agar payload tidak membengkak. Di bawah batas,
@@ -34,31 +35,27 @@ const CORE_ROUTER_READ_TOOLS = new Set([
   "system_identity",
 ]);
 
+/** Skor relevansi satu tool terhadap kata kunci (dipakai ranking + budget deskripsi). */
+export function scoreToolForQuery(t: NormalizedTool, keywords: Set<string>): number {
+  if (t.fqName === CONNECTION_CHECK_FQ) return 1_000_000;
+  if (CORE_ROUTER_READ_TOOLS.has(t.rawName)) return 600_000;
+  const hay = `${t.fqName} ${t.description} ${(t.capabilities ?? []).join(" ")}`.toLowerCase();
+  let s = 0;
+  for (const kw of keywords) {
+    if (hay.includes(kw)) s += kw.length >= 5 ? 200 : 100;
+  }
+  if (t.fqName.startsWith("docs:") || t.fqName.startsWith("web:")) s += 5_000;
+  return s;
+}
+
 export function selectRelevantTools(catalog: NormalizedTool[], userText: string): NormalizedTool[] {
   const totalSchema = catalog.reduce((n, t) => n + schemaChars(t), 0);
   if (catalog.length <= MAX_PROVIDER_TOOLS && totalSchema <= MAX_PROVIDER_SCHEMA_CHARS) return catalog;
-  const keywords = new Set(
-    userText
-      .toLowerCase()
-      .split(/[^a-z0-9_]+/i)
-      .map((w) => w.trim())
-      .filter((w) => w.length >= 3),
-  );
-  const score = (t: NormalizedTool): number => {
-    if (t.fqName === CONNECTION_CHECK_FQ) return 1_000_000;
-    if (CORE_ROUTER_READ_TOOLS.has(t.rawName)) return 600_000;
-    const hay = `${t.fqName} ${t.description} ${(t.capabilities ?? []).join(" ")}`.toLowerCase();
-    let s = 0;
-    for (const kw of keywords) {
-      if (hay.includes(kw)) s += kw.length >= 5 ? 200 : 100;
-    }
-    if (t.fqName.startsWith("docs:") || t.fqName.startsWith("web:")) s += 5_000;
-    return s;
-  };
+  const keywords = extractQueryKeywords(userText);
   // Rangking menurun, isi rakus sampai batas jumlah ATAU ukuran schema —
   // probe koneksi selalu ikut walau budget ketat.
   const ranked = [...catalog]
-    .map((t, i) => ({ t, s: score(t), i }))
+    .map((t, i) => ({ t, s: scoreToolForQuery(t, keywords), i }))
     .sort((a, b) => b.s - a.s || a.i - b.i);
   const picked: typeof ranked = [];
   let chars = 0;

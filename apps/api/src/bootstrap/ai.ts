@@ -46,7 +46,7 @@ export function makeRateLimitedClient(
           name: (c as { name?: string }).name ?? cfg.name,
           apiKey: c.apiKey ?? cfg.apiKey,
         };
-    return createOpenAiCompatibleClient(effective, logger, { limiter: globalRateLimiter });
+    return createOpenAiCompatibleClient(effective, logger, { limiter: globalRateLimiter, temperature: config.AI_TEMPERATURE });
   };
   if (fallbackCandidates.length === 0) return base({ providerId: cfg.id ?? cfg.kind, providerKind: cfg.kind, model: cfg.model, enabled: true, apiKey: cfg.apiKey });
   const primary: FallbackCandidate = { providerId: cfg.id ?? cfg.kind, providerKind: cfg.kind, model: cfg.model, enabled: true, apiKey: cfg.apiKey };

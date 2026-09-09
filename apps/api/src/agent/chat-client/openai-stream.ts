@@ -43,6 +43,9 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
   // (mis. background task). Queue RPM/TPM + blockedUntil (Retry-After/backoff)
   // tetap berlaku untuk semua request; fallback antar model ditangani lapisan atas.
   const maxRetries = opts.maxRetries ?? 0;
+  // Temperature rendah = tool-calling presisi (argumen konsisten, minim
+  // halusinasi nama tool). null = parameter tidak dikirim sama sekali.
+  const temperature = opts.temperature ?? null;
   const modelKey = modelKeyFor(cfg.kind, cfg.model);
   let sharedKey: string | null = null;
   try {
@@ -90,7 +93,7 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
       const ctx: TurnCtx = {
         cfg, logger, limiter, maxRetries, modelKey, sharedKey,
         normalizedBaseUrl, client, input, estimated, diag, endpointHost,
-        wireMessages, wireTools,
+        wireMessages, wireTools, temperature,
       };
 
       let attempt = 0;
