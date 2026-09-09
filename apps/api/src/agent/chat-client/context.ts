@@ -2,6 +2,7 @@ import type OpenAI from "openai";
 import type { Logger } from "../../lib/logger";
 import type { CentralRateLimiter } from "../rate-limiter";
 import type { ProviderConfigWithKey } from "../provider-settings";
+import type { ReasoningEffort } from "@shared/index";
 import type {
   ChatToolDefinition,
   ProviderRequestDiag,
@@ -18,6 +19,9 @@ export interface SdkChunk {
     finish_reason?: string | null;
     delta?: {
       content?: string | null;
+      /** Reasoning trace terpisah (OpenRouter/DeepSeek: reasoning_content). */
+      reasoning_content?: string | null;
+      reasoning?: string | null;
       tool_calls?: { index?: number; id?: string; extra_content?: unknown; function?: { name?: string; arguments?: string } }[];
     };
   }[];
@@ -42,4 +46,6 @@ export interface TurnCtx {
   wireTools: ChatToolDefinition[];
   /** Temperature sampling (null = tidak dikirim; pakai default model). */
   temperature: number | null;
+  /** Reasoning effort (null = tidak dikirim; pakai default model). */
+  reasoningEffort: ReasoningEffort | null;
 }

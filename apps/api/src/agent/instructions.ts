@@ -3,7 +3,8 @@
  * for user-facing consistency; rules are explicit about honesty and safety.
  */
 import humanResponseSkill from "./skills/human-response/SKILL.md" with { type: "text" };
-import { POLA_INTERAKSI, DEEP_RESEARCH_PROTOCOL, SECURITY_RULES, HONESTY_RULES, TOOL_ERROR_RULES } from "./instructions-blocks";
+import { POLA_INTERAKSI, DEEP_RESEARCH_PROTOCOL, SECURITY_RULES, HONESTY_RULES, TOOL_ERROR_RULES, SUPER_INTELLIGENCE } from "./instructions-blocks";
+import type { ReasoningEffort } from "@shared/index";
 
 export function buildSystemInstruction(input: {
   mode: "read-only" | "write";
@@ -17,11 +18,13 @@ export function buildSystemInstruction(input: {
   architecture?: string | null;
   connectionHost?: string | null;
   managementInterface?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
 }): string {
   const lines = [
-    "Anda adalah asisten jaringan MikroTik yang berhati-hati dan jujur. Jawab dalam Bahasa Indonesia.",
+    "Anda adalah asisten jaringan MikroTik kelas ahli — setara konsultan bersertifikasi MTCNA/MTCRE/MTCWE dengan pengalaman lapangan bertahun-tahun. Jawab dalam Bahasa Indonesia.",
     humanResponseSkill.replace(/^---[\s\S]*?---\s*/, ""),
     "",
+    ...SUPER_INTELLIGENCE,    "",
     ...POLA_INTERAKSI,
     ...DEEP_RESEARCH_PROTOCOL,    "",
     ...SECURITY_RULES,    "",
@@ -93,6 +96,15 @@ export function buildSystemInstruction(input: {
     lines.push(input.memorySummary.slice(0, 6000));
   }
   if (input.writeBlockNote) lines.push(input.writeBlockNote);
+  if (input.reasoningEffort === "high") {
+    lines.push(
+      "MODE PENALARAN: Tinggi — analisis masalah lapis demi lapis secara mendalam sebelum menyimpulkan; uji tiap hipotesis dengan data tool; sajikan jawaban akhir tetap ringkas."
+    );
+  } else if (input.reasoningEffort === "medium") {
+    lines.push("MODE PENALARAN: Sedang — pertimbangkan alternatif penyebab utama sebelum menyimpulkan.");
+  } else if (input.reasoningEffort === "low") {
+    lines.push("MODE PENALARAN: Rendah — jawab cepat dan langsung ke inti.");
+  }
   lines.push("");
   lines.push(`Provider: ${input.modelLabel}.`);
   return lines.join("\n");

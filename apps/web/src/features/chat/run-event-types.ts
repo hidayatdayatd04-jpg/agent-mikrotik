@@ -7,6 +7,15 @@ export interface LiveToolItem {
   status: "running" | "done" | "failed";
 }
 
+/** Error run yang ditangkap live dari event run.failed (kartu, bukan chat). */
+export interface LiveRunError {
+  runId: string;
+  code: string;
+  reason: string;
+  toolSucceeded: number;
+  toolFailed: number;
+}
+
 export const TERMINAL = ["completed", "failed", "cancelled"];
 
 export const STREAM_EVENT_TYPES = [
@@ -29,4 +38,5 @@ export interface RunEventsSink {
   setTxStatus: Dispatch<SetStateAction<string | null>>;
   setQueueStatus: Dispatch<SetStateAction<string | null>>;
   setLive: Dispatch<SetStateAction<boolean>>;
+  setRunError: Dispatch<SetStateAction<LiveRunError | null>>;
 }

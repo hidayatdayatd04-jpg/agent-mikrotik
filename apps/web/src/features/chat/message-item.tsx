@@ -18,6 +18,8 @@ export function MessageItem(props: {
   onAnswerAsk?: (label: string) => void;
   onSendToTerminal?: (code: string) => void;
   onResendPrompt?: (prompt: string) => void;
+  onRetryMessage?: (messageId: string, text: string) => void;
+  actionsDisabled?: boolean;
   activeConnectionId?: string | null;
   conversationId?: string | null;
 }) {
@@ -47,6 +49,7 @@ export function MessageItem(props: {
             onStartEdit={() => props.onStartEdit(m)}
             onCancelEdit={props.onCancelEdit}
             onSubmitEdit={props.onSubmitEdit}
+            editDisabled={props.actionsDisabled}
           />
         ) : (
           <AssistantMessage
@@ -56,6 +59,8 @@ export function MessageItem(props: {
             onAnswerAsk={props.onAnswerAsk}
             onSendToTerminal={props.onSendToTerminal}
             onResendPrompt={props.onResendPrompt}
+            onRetryMessage={props.onRetryMessage}
+            actionsDisabled={props.actionsDisabled}
             activeConnectionId={props.activeConnectionId}
             conversationId={props.conversationId}
           />

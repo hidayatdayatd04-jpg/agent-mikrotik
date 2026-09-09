@@ -21,7 +21,7 @@ export interface MessageDTO {
     runId?: string;
     timeline?: RunEventDTO[];
     attachments?: { id: string; name: string; kind: string }[];
-    outcome?: { status: string; code?: string; reason?: string; toolSucceeded?: number; toolFailed?: number; succeededTools?: string[] };
+    outcome?: { status: string; code?: string; reason?: string; toolSucceeded?: number; toolFailed?: number; succeededTools?: string[]; hasPartial?: boolean };
   };
   status: string;
   seq: number;
@@ -66,6 +66,9 @@ export interface StartRunInput {
   attachmentIds?: string[];
   model?: string;
   providerId?: string;
+  reasoningEffort?: "low" | "medium" | "high";
+  /** Retry in-place: pakai ulang pesan user ini (tanpa pesan baru). */
+  editedMessageId?: string;
 }
 
 export interface AiProviderDTO {

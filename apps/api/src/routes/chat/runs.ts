@@ -1,6 +1,6 @@
 import type { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, gt, inArray } from "drizzle-orm";
 import { AppError } from "../../lib/errors";
 import type { Env } from "../../types";
 import { agentRuns, attachments, conversations, messages } from "../../db/schema";
@@ -40,11 +40,56 @@ export function registerRunRoutes(routes: Hono<Env>, ctx: ChatCtx) {
       throw new AppError("RUN_ALREADY_ACTIVE", "Satu run aktif per percakapan. Tunggu atau batalkan run berjalan.", 409);
     }
 
+    // Retry in-place: pesan user yang diedit dipakai ulang (tanpa duplikat).
+    // Validasi SETELAH guard run-aktif agar penolakan tidak mengubah data.
+    let editedMsg: { id: string; seq: number; content: unknown } | null = null;
+    if (input.editedMessageId) {
+      if ((input.attachmentIds ?? []).length > 0) {
+        throw new AppError("VALIDATION_FAILED", "Lampiran baru tidak didukung saat mengulang pesan yang sudah ada.", 422);
+      }
+      const [row] = await deps.db
+        .select({ id: messages.id, seq: messages.seq, content: messages.content, role: messages.role })
+        .from(messages)
+        .where(and(eq(messages.id, input.editedMessageId), eq(messages.conversationId, conv.id)))
+        .limit(1);
+      if (!row || row.role !== "user") {
+        throw new AppError("VALIDATION_FAILED", "Pesan yang diulang tidak ditemukan atau bukan pesan pengguna.", 422);
+      }
+      const laterUsers = await deps.db
+        .select({ id: messages.id })
+        .from(messages)
+        .where(and(eq(messages.conversationId, conv.id), eq(messages.role, "user"), gt(messages.seq, row.seq as number)))
+        .limit(1);
+      if (laterUsers.length > 0) {
+        throw new AppError(
+          "VALIDATION_FAILED",
+          "Pesan tersebut sudah memiliki kelanjutan di bawahnya; kirim sebagai pesan baru.",
+          409,
+        );
+      }
+      editedMsg = { id: row.id, seq: row.seq as number, content: row.content };
+    }
+
     // Resolve the exact selection before persisting or opening any router transaction.
     const cfg = await deps.getProvider(workspace.userId, input.model, input.providerId);
-    // attachments: only READY rows owned by this user AND this conversation
+    // attachments: only READY rows owned by this user AND this conversation.
+    // Saat retry in-place, konteks dibangun ulang dari lampiran yang sudah
+    // terikat pada pesan tersebut (tanpa upload baru).
     let attachmentBlocks: { id: string; kind: string; name: string; mime: string; text?: string }[] = []; // eslint-disable-line prefer-const
-    const wantedIds = input.attachmentIds ?? [];
+    const wantedIds = editedMsg
+      ? (
+          await deps.db
+            .select({ id: attachments.id })
+            .from(attachments)
+            .where(
+              and(
+                eq(attachments.messageId, editedMsg.id),
+                eq(attachments.conversationId, conv.id),
+                eq(attachments.userId, workspace.userId),
+              ),
+            )
+        ).map((r) => r.id)
+      : (input.attachmentIds ?? []);
     if (wantedIds.length > 0) {
       const rows = await deps.db
         .select()
@@ -92,16 +137,42 @@ export function registerRunRoutes(routes: Hono<Env>, ctx: ChatCtx) {
     }
     if (isGreetingOnly(input.text) && wantedIds.length === 0) mode = "read-only";
 
-    // persist input BEFORE streaming starts
-    const all = await deps.db
-      .select({ seq: messages.seq })
-      .from(messages)
-      .where(eq(messages.conversationId, conv.id));
-    const maxSeq = all.reduce((m, r) => Math.max(m, r.seq), 0);
-    const [userMsg] = await deps.db
-      .insert(messages)
-      .values({ conversationId: conv.id, role: "user", content: { text: input.text, context: attachmentNote || undefined, attachments: attachmentBlocks.map((b) => ({ id: b.id, name: b.name, kind: b.kind })) }, seq: maxSeq + 1 })
-      .returning();
+    // persist input BEFORE streaming starts. Retry in-place: perbarui teks
+    // pesan yang sama lalu buang pesan-pesan kedaluwarsa di bawahnya
+    // (mis. jawaban gagal) — tanpa menambah pesan user baru.
+    let userMessageId: string;
+    if (editedMsg) {
+      const prevContent =
+        editedMsg.content && typeof editedMsg.content === "object"
+          ? (editedMsg.content as Record<string, unknown>)
+          : {};
+      await deps.db
+        .update(messages)
+        .set({
+          content: {
+            ...prevContent,
+            text: input.text,
+            ...(attachmentNote ? { context: attachmentNote } : {}),
+            attachments: attachmentBlocks.map((b) => ({ id: b.id, name: b.name, kind: b.kind })),
+          },
+        })
+        .where(eq(messages.id, editedMsg.id));
+      await deps.db
+        .delete(messages)
+        .where(and(eq(messages.conversationId, conv.id), gt(messages.seq, editedMsg.seq)));
+      userMessageId = editedMsg.id;
+    } else {
+      const all = await deps.db
+        .select({ seq: messages.seq })
+        .from(messages)
+        .where(eq(messages.conversationId, conv.id));
+      const maxSeq = all.reduce((m, r) => Math.max(m, r.seq), 0);
+      const [userMsg] = await deps.db
+        .insert(messages)
+        .values({ conversationId: conv.id, role: "user", content: { text: input.text, context: attachmentNote || undefined, attachments: attachmentBlocks.map((b) => ({ id: b.id, name: b.name, kind: b.kind })) }, seq: maxSeq + 1 })
+        .returning();
+      userMessageId = userMsg!.id;
+    }
     const [run] = await deps.db
       .insert(agentRuns)
       .values({
@@ -114,8 +185,9 @@ export function registerRunRoutes(routes: Hono<Env>, ctx: ChatCtx) {
       })
       .returning();
     // bind attachments to the persisted user message (post-insert, id known)
-    if (wantedIds.length > 0) {
-      await deps.db.update(attachments).set({ messageId: userMsg!.id }).where(inArray(attachments.id, wantedIds));
+    // Retry in-place tidak mengikat ulang (lampiran sudah terikat).
+    if (!editedMsg && wantedIds.length > 0) {
+      await deps.db.update(attachments).set({ messageId: userMessageId }).where(inArray(attachments.id, wantedIds));
     }
     await deps.db.update(conversations).set({ updatedAt: new Date() }).where(eq(conversations.id, conv.id));
 
@@ -127,7 +199,7 @@ export function registerRunRoutes(routes: Hono<Env>, ctx: ChatCtx) {
       run: run!,
       input,
       cfg,
-      userMessageId: userMsg!.id,
+      userMessageId,
       attachmentNote,
       connectionId: connectionId ?? null,
       mode,

@@ -29,27 +29,12 @@ export async function finalizeRun(
       c.failCode = "EMPTY_RESPONSE";
       c.failMessage = "Provider AI mengakhiri giliran tanpa memberikan teks jawaban atau pemanggilan tool.";
     }
-    // Penutup kegagalan SELALU ditambahkan untuk status non-completed,
-    // bahkan bila assistantText sudah berisi teks parsial/preamble.
-    // Teks parsial dipertahankan; penutup menjelaskan alasan + ringkasan
-    // hitungan tool (detail per-tool sudah ada di timeline/events).
-    const succeeded = c.toolOutcomes.filter((t) => t.ok).length;
-    const failedTools = c.toolOutcomes.filter((t) => !t.ok).length;
-    const progressLine =
-      c.toolOutcomes.length > 0
-        ? `\nHasil yang sudah terbaca tetap tersimpan: ${succeeded} berhasil, ${failedTools} gagal/ditolak dari ${c.toolOutcomes.length} pemanggilan tool. Buka "Lihat detail" untuk output tiap tool.`
-        : "";
-    if (c.finalStatus === "cancelled") {
-      if (!c.assistantText.trim()) {
-        c.assistantText = "(Run dibatalkan pengguna)";
-      }
-    } else {
-      const failureExplanation =
-        `\n\n---\nPemeriksaan belum selesai (${c.failCode ?? "RUN_FAILED"}): ${c.failMessage ?? "Terjadi kendala saat memproses permintaan."}` +
-        `${progressLine}` +
-        `\nAnda dapat menekan "Lanjutkan pemeriksaan" untuk meneruskan sisa pekerjaan tanpa mengulang pembacaan yang sudah berhasil.`;
-      c.assistantText += failureExplanation;
-      await emitSeq({ type: "message.delta", payload: { text: failureExplanation } });
+    // Kegagalan TIDAK disisipkan ke teks chat: detail error (kode, pesan
+    // provider, progres tool) disampaikan sebagai kartu error terstruktur
+    // via event run.failed + outcome pesan — bukan bubble chat. Teks parsial
+    // yang sudah ter-stream dipertahankan apa adanya.
+    if (c.finalStatus === "cancelled" && !c.assistantText.trim()) {
+      c.assistantText = "(Run dibatalkan pengguna)";
     }
   }
 
@@ -58,18 +43,22 @@ export async function finalizeRun(
     .from(messages)
     .where(eq(messages.conversationId, input.conversationId));
   const maxSeq = all.reduce((m, r) => Math.max(m, r.seq), 0);
+  const toolSucceeded = c.toolOutcomes.filter((t) => t.ok).length;
+  const toolFailed = c.toolOutcomes.filter((t) => !t.ok).length;
   const outcome =
     c.finalStatus === "completed"
-      ? { status: "completed" as const, toolSucceeded: c.toolOutcomes.filter((t) => t.ok).length, toolFailed: c.toolOutcomes.filter((t) => !t.ok).length }
+      ? { status: "completed" as const, toolSucceeded, toolFailed }
       : {
           status: c.finalStatus as "failed" | "cancelled",
           code: c.failCode ?? "RUN_FAILED",
           reason: c.failMessage ?? "Run gagal.",
-          toolSucceeded: c.toolOutcomes.filter((t) => t.ok).length,
-          toolFailed: c.toolOutcomes.filter((t) => !t.ok).length,
+          toolSucceeded,
+          toolFailed,
           // Daftar fq tool yang sudah berhasil — dipakai tombol
           // "Lanjutkan pemeriksaan" agar tidak mengulang pembacaan valid.
           succeededTools: c.toolOutcomes.filter((t) => t.ok).map((t) => t.fq),
+          // True bila ada jawaban parsial yang ikut tersimpan di teks.
+          hasPartial: c.assistantText.trim().length > 0,
         };
   await env.db.insert(messages).values({
     conversationId: input.conversationId,
@@ -93,6 +82,18 @@ export async function finalizeRun(
   } else if (c.finalStatus === "cancelled") {
     await emitSeq({ type: "run.cancelled", payload: { reason: c.failMessage ?? "dibatalkan pengguna" } });
   } else {
-    await emitSeq({ type: "run.failed", payload: { code: c.failCode ?? "RUN_FAILED", message: c.failMessage ?? "Run gagal." } });
+    // Payload terstruktur untuk kartu error di UI (bukan teks chat):
+    // kode, pesan provider, progres tool, dan penanda jawaban parsial.
+    await emitSeq({
+      type: "run.failed",
+      payload: {
+        code: c.failCode ?? "RUN_FAILED",
+        message: c.failMessage ?? "Run gagal.",
+        toolSucceeded,
+        toolFailed,
+        succeededTools: c.toolOutcomes.filter((t) => t.ok).map((t) => t.fq),
+        hasPartial: c.assistantText.trim().length > 0,
+      },
+    });
   }
 }

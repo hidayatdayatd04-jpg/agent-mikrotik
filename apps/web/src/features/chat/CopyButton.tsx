@@ -7,9 +7,10 @@ export function CopyButton({ getText, label = "Salin" }: { getText: () => string
   return (
     <Button
       variant="ghost"
-      size="sm"
-      className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/80 gap-1.5 rounded-md transition-colors"
-      aria-label="Salin teks"
+      size="icon"
+      className="size-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors"
+      aria-label={label}
+      title={label}
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(getText());
@@ -21,15 +22,9 @@ export function CopyButton({ getText, label = "Salin" }: { getText: () => string
       }}
     >
       {copied ? (
-        <>
-          <Check className="size-3.5 text-emerald-500" aria-hidden />
-          <span className="text-emerald-500 font-medium">Tersalin!</span>
-        </>
+        <Check className="size-3.5 text-emerald-500" aria-hidden />
       ) : (
-        <>
-          <Copy className="size-3.5" aria-hidden />
-          <span>{label}</span>
-        </>
+        <Copy className="size-3.5" aria-hidden />
       )}
     </Button>
   );

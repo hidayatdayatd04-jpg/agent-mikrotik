@@ -4,6 +4,7 @@ import type { ChatClient } from "../chat-client";
 import type { PolicyDispatcher, PolicySnapshot } from "../../policies/dispatcher";
 import type { TransactionCoordinator } from "../../transactions/coordinator";
 import type { NormalizedTool } from "../../policies/normalize";
+import type { ReasoningEffort } from "@shared/index";
 
 export interface RunEvent {
   type:
@@ -45,6 +46,11 @@ export interface StartRunInput {
   executeTool: (input: { fqName: string; args: unknown; retryRead?: boolean }) => Promise<{ ok: boolean; output: string; errorCode?: string }>;
   /** System instruction with mode/router/doc rules for this run. */
   systemInstruction: string;
+  /**
+   * Upaya penalaran pilihan pengguna untuk run ini (diteruskan ke provider
+   * sebagai `reasoning_effort`; undefined = default model).
+   */
+  reasoningEffort?: ReasoningEffort;
   /** Lazily opens Safe Mode transaction only when a mutation is about to run */
   ensureTransaction?: () => Promise<{ ok: boolean; transactionId?: string; error?: string }>;
 }

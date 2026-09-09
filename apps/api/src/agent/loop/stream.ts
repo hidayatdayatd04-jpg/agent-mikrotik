@@ -11,6 +11,8 @@ export interface StreamStepEnv {
   maxTokens: number;
   runId: string;
   entryController: AbortController;
+  /** Diteruskan ke provider sebagai reasoning_effort (undefined = default). */
+  reasoningEffort?: import("@shared/index").ReasoningEffort;
 }
 
 export type StreamStepOutcome =
@@ -64,6 +66,7 @@ export async function streamStepTurn(
       messages: args.chatHistory,
       tools: args.providerTools,
       maxTokens: env.maxTokens,
+      reasoningEffort: env.reasoningEffort,
       signal: combinedController.signal,
       onRequestAttempt: () => {
         c.aiRequests += 1;

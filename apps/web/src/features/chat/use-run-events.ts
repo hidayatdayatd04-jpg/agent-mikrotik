@@ -1,10 +1,10 @@
 import { useRef, useState } from "react";
 import type { RunEventDTO } from "./chat-hooks";
-import type { LiveToolItem } from "./run-event-types";
+import type { LiveRunError, LiveToolItem } from "./run-event-types";
 import { useRunEventStream } from "./run-events-stream";
 import { useRunEventsPoll } from "./run-events-poll";
 
-export type { LiveToolItem } from "./run-event-types";
+export type { LiveRunError, LiveToolItem } from "./run-event-types";
 
 /**
  * Live SSE subscription for one run (M9). Uses native EventSource
@@ -24,6 +24,7 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
   const [toolActivity, setToolActivity] = useState<LiveToolItem[]>([]);
   const [txStatus, setTxStatus] = useState<string | null>(null);
   const [queueStatus, setQueueStatus] = useState<string | null>(null);
+  const [runError, setRunError] = useState<LiveRunError | null>(null);
   const doneRef = useRef(onDone);
   const finishRef = useRef<(immediate?: boolean) => void>(() => {});
   const lastSeqRef = useRef(0);
@@ -31,12 +32,12 @@ export function useRunEvents(runId: string | null, onDone?: () => void) {
 
   useRunEventStream(
     runId,
-    { setEvents, setStreamText, setToolActivity, setTxStatus, setQueueStatus, setLive },
+    { setEvents, setStreamText, setToolActivity, setTxStatus, setQueueStatus, setLive, setRunError },
     doneRef,
     finishRef,
     lastSeqRef,
   );
   useRunEventsPoll(runId, finishRef);
 
-  return { events, streamText, toolActivity, txStatus, queueStatus, live };
+  return { events, streamText, toolActivity, txStatus, queueStatus, live, runError };
 }

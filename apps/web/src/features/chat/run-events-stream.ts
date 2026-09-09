@@ -10,6 +10,7 @@ export function useRunEventStream(
   lastSeqRef: { current: number },
 ) {
   const { setEvents, setStreamText, setToolActivity, setTxStatus, setQueueStatus, setLive } = sink;
+  const { setRunError } = sink;
 
   useEffect(() => {
     lastSeqRef.current = 0;
@@ -19,6 +20,7 @@ export function useRunEventStream(
       setToolActivity([]);
       setTxStatus(null);
       setQueueStatus(null);
+      setRunError(null);
       setLive(false);
       finishRef.current = () => {};
       return;
@@ -28,6 +30,7 @@ export function useRunEventStream(
     setToolActivity([]);
     setTxStatus(null);
     setQueueStatus(null);
+    setRunError(null);
     setLive(true);
 
     let cancelled = false;

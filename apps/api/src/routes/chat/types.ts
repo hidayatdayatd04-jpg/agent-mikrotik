@@ -77,6 +77,17 @@ export const RunSchema = z.object({
   attachmentIds: z.array(z.string().uuid()).max(4).optional(),
   model: z.string().max(255).optional(),
   providerId: z.string().max(128).optional(),
+  /**
+   * Upaya penalaran pilihan pengguna (hanya dikirim bila model mendukung;
+   * backend mengabaikan nilai untuk model tanpa dukungan reasoning).
+   */
+  reasoningEffort: z.enum(["low", "medium", "high"]).optional(),
+  /**
+   * Retry in-place: id pesan user yang teksnya diperbarui lalu dipakai ulang
+   * sebagai pemicu run (tanpa menambah pesan user baru). Pesan-pesan di
+   * bawahnya yang sudah kedaluwarsa (mis. jawaban gagal) dihapus.
+   */
+  editedMessageId: z.string().uuid().optional(),
 });
 
 export type RunInput = z.infer<typeof RunSchema>;

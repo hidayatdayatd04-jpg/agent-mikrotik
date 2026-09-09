@@ -1,4 +1,5 @@
 import type { RunEventDTO } from "./chat-hooks";
+import { toRunErrorInfo } from "./run-error";
 import { TERMINAL, type RunEventsSink } from "./run-event-types";
 
 export interface PayloadHandlerCtx {
@@ -108,6 +109,11 @@ export function createPayloadHandler(ctx: PayloadHandlerCtx) {
       } else if (ev.type === "run.cancelled") {
         ctx.confirmDone(true);
       } else if (ev.type === "run.completed" || ev.type === "run.failed") {
+        // Detail kegagalan ditangkap terstruktur untuk kartu error (bukan chat).
+        if (ev.type === "run.failed") {
+          const p = ev.payload as { code?: unknown; reason?: unknown; message?: unknown; toolSucceeded?: unknown; toolFailed?: unknown };
+          sink.setRunError({ runId: ev.runId, ...toRunErrorInfo(p) });
+        }
         ctx.confirmDone(false);
       }
     } catch {

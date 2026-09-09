@@ -94,4 +94,5 @@ export {
   History,
   Users,
   HardDrive,
+  Brain,
 } from "./icons-f";

@@ -94,6 +94,7 @@ export function createOpenAiCompatibleClient(cfg: ProviderConfigWithKey, logger:
         cfg, logger, limiter, maxRetries, modelKey, sharedKey,
         normalizedBaseUrl, client, input, estimated, diag, endpointHost,
         wireMessages, wireTools, temperature,
+        reasoningEffort: input.reasoningEffort ?? null,
       };
 
       let attempt = 0;

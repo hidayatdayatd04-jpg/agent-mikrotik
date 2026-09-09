@@ -1,4 +1,5 @@
 import { isReadOnlyIntent } from "../../agent/intent";
+import { normalizeReasoningEffort, supportsReasoning } from "@shared/index";
 import type { RunEvent } from "../../agent/loop";
 import type { WorkspaceContext } from "../../lib/workspace";
 import type { ProviderConfigWithKey } from "../../agent/provider-settings";
@@ -57,6 +58,11 @@ export async function executeBackgroundRun(
     const routerLabel = conn?.status === "connected" ? conn.routerIdentity ?? conn.host : null;
     // Memory summary (untrusted data, never authority): latest compacted context.
     const memorySummary = await loadMemorySummary(ctx, conv.id);
+    // Reasoning hanya diteruskan bila model primer run ini mendukungnya;
+    // nilai untuk model biasa diabaikan agar tak membakar request sia-sia.
+    const requestedReasoning = normalizeReasoningEffort((input as { reasoningEffort?: unknown }).reasoningEffort);
+    const modelForReasoning = input.model ?? cfg?.model ?? "";
+    const reasoningEffort = requestedReasoning && supportsReasoning(modelForReasoning) ? requestedReasoning : undefined;
     const result = await deps.loop.run(
       {
         runId: run.id,
@@ -65,6 +71,7 @@ export async function executeBackgroundRun(
         connectionId: connectionId ?? null,
         userMessageId: args.userMessageId,
         userText: input.text + args.attachmentNote,
+        reasoningEffort,
         policy: {
           userId: workspace.userId,
           connectionId: connectionId ?? "none",
@@ -97,6 +104,7 @@ export async function executeBackgroundRun(
           txActive: box.txId !== null,
           writeBlockNote,
           memorySummary,
+          reasoningEffort,
           rosVersion: (conn as any)?.rosVersion ?? null,
           boardName: (conn as any)?.boardName ?? null,
           architecture: (conn as any)?.architecture ?? null,

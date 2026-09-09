@@ -81,6 +81,7 @@ export function createAgentLoop(deps: AgentRunDeps) {
         db: deps.db,
         client: input.client,
         maxTokens: deps.limits.maxTokens,
+        reasoningEffort: input.reasoningEffort,
         runId: input.runId,
         entryController: entry.controller,
         dispatcher: deps.dispatcher,

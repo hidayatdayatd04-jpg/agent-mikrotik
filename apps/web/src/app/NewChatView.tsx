@@ -50,7 +50,7 @@ export function NewChatView({
     }
   }, [text, draftKey]);
 
-  async function handleSend(message: string, attachmentIds: string[]) {
+  async function handleSend(message: string, attachmentIds: string[], model?: string, providerId?: string, reasoningEffort?: string) {
     const trimmed = message.trim();
     if (!trimmed) return;
     // Persist draft for returnTo flow before navigation.
@@ -71,6 +71,9 @@ export function NewChatView({
     try {
       sessionStorage.setItem(`pending-prompt-${res.conversation.id}`, trimmed);
       if (selected) sessionStorage.setItem("pending-connector", selected.id);
+      if (model) sessionStorage.setItem(`pending-model-${res.conversation.id}`, model);
+      if (providerId) sessionStorage.setItem(`pending-provider-${res.conversation.id}`, providerId);
+      if (reasoningEffort) sessionStorage.setItem(`pending-reasoning-${res.conversation.id}`, reasoningEffort);
     } catch {
       /* ignore */
     }
@@ -97,7 +100,7 @@ export function NewChatView({
             onClearExternalText={() => setText("")}
             onPickFile={() => toast.info("Lampirkan file setelah chat dibuat, atau via chat tersimpan.")}
             onRemoveAttachment={() => {}}
-            onSend={(t, ids) => void handleSend(t, ids)}
+            onSend={(t, ids, m, p, r) => void handleSend(t, ids, m, p, r)}
             onCancel={() => {}}
             onAddRouter={() => {
               try {

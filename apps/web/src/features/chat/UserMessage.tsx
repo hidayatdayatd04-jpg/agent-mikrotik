@@ -12,6 +12,8 @@ export function UserMessage(props: {
   onStartEdit: () => void;
   onCancelEdit: () => void;
   onSubmitEdit: () => void;
+  /** Kunci tombol Edit (mis. saat run berjalan). */
+  editDisabled?: boolean;
 }) {
   const { m, isEditing } = props;
   return (
@@ -39,18 +41,18 @@ export function UserMessage(props: {
         </div>
       )}
 
-      {!isEditing && (
+      {!isEditing && !props.editDisabled && (
         <div className="mt-1 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           <CopyButton getText={() => m.content.text ?? ""} label="Salin" />
           <Button
             variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/80 gap-1 rounded-md transition-colors"
+            size="icon"
+            className="size-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors"
             onClick={props.onStartEdit}
-            title="Edit pesan ini"
+            title="Edit lalu ulangi pesan ini"
+            aria-label="Edit lalu ulangi pesan ini"
           >
-            <Pencil className="size-3" />
-            <span>Edit</span>
+            <Pencil className="size-3.5" />
           </Button>
         </div>
       )}

@@ -1,4 +1,5 @@
 import type { CentralRateLimiter } from "../rate-limiter";
+import type { ReasoningEffort } from "@shared/index";
 
 export interface ChatToolDefinition {
   type: "function";
@@ -33,6 +34,13 @@ export interface StreamTurnInput {
   tools: ChatToolDefinition[];
   maxTokens: number;
   signal?: AbortSignal;
+  /**
+   * Upaya penalaran yang diminta pengguna (low/medium/high).
+   * undefined = jangan kirim parameter; model memakai default-nya.
+   * Provider yang menolak parameter ini akan di-fallback otomatis
+   * (request diulang tanpa parameter) agar run tidak gagal.
+   */
+  reasoningEffort?: ReasoningEffort;
   /** Dipanggil setiap upaya HTTP ke provider (termasuk retry). Untuk pencatatan jumlah request AI. */
   onRequestAttempt?: () => void;
   /** Dipanggil setelah keluar antrean rate limiter dengan lama tunggu (ms). */

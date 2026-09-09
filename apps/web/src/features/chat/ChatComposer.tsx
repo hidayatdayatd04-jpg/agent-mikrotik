@@ -7,9 +7,11 @@ import { useComposerModel } from "./composer/use-composer-model";
 import { useModelScroll } from "./composer/use-model-scroll";
 import { useComposerDraft } from "./composer/use-composer-draft";
 import { useComposerActions } from "./composer/use-composer-actions";
+import { useComposerReasoning } from "./composer/use-composer-reasoning";
+import { ReasoningPicker } from "./composer/ReasoningPicker";
 import { ComposerMenu } from "./composer/ComposerMenu";
 import { ModelPicker } from "./composer/ModelPicker";
-import { ComposerAttachments, ComposerBadges } from "./composer/ComposerExtras";
+import { ComposerAttachments } from "./composer/ComposerExtras";
 import type { ChatComposerProps } from "./composer/types";
 
 export function ChatComposer(props: ChatComposerProps) {
@@ -33,11 +35,13 @@ export function ChatComposer(props: ChatComposerProps) {
         props.attachments.map((a) => a.id),
         model.effectiveModel || undefined,
         model.effectiveSelection?.providerId,
+        reasoning.effort,
       ),
   });
   const { text, setText, textareaRef } = draft;
 
   const model = useComposerModel(text, props.draftKey);
+  const reasoning = useComposerReasoning(model.effectiveModel);
   const scroll = useModelScroll(model.modelMenuOpen, model.modelQuery, model.aiProviders.data);
 
   const fallbackConnectors = useConnectors();
@@ -97,11 +101,10 @@ export function ChatComposer(props: ChatComposerProps) {
                 onCompact={props.onCompact}
                 connector={props.connector}
               />
-
-              <ComposerBadges connector={props.connector} writeEnabled={writeEnabled} />
             </div>
 
             <div className="flex items-center gap-1.5 sm:gap-2">
+              <ReasoningPicker reasoning={reasoning} />
               <ModelPicker model={model} scroll={scroll} />
               <ContextMeter
                 conversationId={props.conversationId}

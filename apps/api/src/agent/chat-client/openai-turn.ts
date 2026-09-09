@@ -42,6 +42,22 @@ function isTemperatureRejection(err: unknown): boolean {
   return (status === 400 || /invalid[ _-]?argument/i.test(msg)) && /temperature/i.test(msg);
 }
 
+/** 400 yang menyebut reasoning_effort/reasoning = model menolak parameter reasoning. */
+function isReasoningRejection(err: unknown): boolean {
+  const e = err as { status?: number; message?: string; error?: { message?: string } } | null;
+  const status = typeof e?.status === "number" ? e.status : 0;
+  const msg = String(e?.error?.message ?? e?.message ?? (err instanceof Error ? err.message : ""));
+  return (status === 400 || /invalid[ _-]?argument/i.test(msg) || /unsupported/i.test(msg)) && /reasoning/i.test(msg);
+}
+
+/** 400 yang menyebut max_tokens = model reasoning baru minta max_completion_tokens. */
+function isMaxTokensRejection(err: unknown): boolean {
+  const e = err as { status?: number; message?: string; error?: { message?: string } } | null;
+  const status = typeof e?.status === "number" ? e.status : 0;
+  const msg = String(e?.error?.message ?? e?.message ?? (err instanceof Error ? err.message : ""));
+  return status === 400 && /max_tokens|max_completion_tokens/i.test(msg);
+}
+
 /** Satu upaya HTTP ke provider; retry/backoff terbatas untuk 429 biasa. */
 export async function requestTurnStream(ctx: TurnCtx, ticket: TurnTicket, attempt: number): Promise<TurnRequestOutcome> {
   const { cfg, logger, limiter, modelKey, client, input, diag, endpointHost, wireMessages, wireTools, maxRetries } = ctx;
@@ -53,36 +69,72 @@ export async function requestTurnStream(ctx: TurnCtx, ticket: TurnTicket, attemp
     model: cfg.model,
     endpoint: endpointHost,
     attempt: attempt + 1,
+    reasoningEffort: ctx.reasoningEffort ?? "default",
     ...diag,
   });
-  try {
-    const doCreate = (temperature: number | null) =>
-      client.chat.completions.create({
-        model: cfg.model,
-        messages: wireMessages as never,
-        tools: wireTools.length ? wireTools : undefined,
-        max_tokens: input.maxTokens,
-        ...(temperature !== null ? { temperature } : {}),
-        stream: true,
-        stream_options: { include_usage: true },
-      }, { signal: input.signal });
-    let stream: Awaited<ReturnType<typeof doCreate>>;
-    try {
-      stream = await doCreate(ctx.temperature);
-    } catch (err) {
-      // Model reasoning tertentu (mis. o1-style) menolak parameter
-      // temperature — coba sekali tanpa parameter sebelum menyerah.
-      if (ctx.temperature !== null && isTemperatureRejection(err)) {
-        logger.warn("provider rejected temperature param; retrying without it", {
-          provider: cfg.kind,
-          model: cfg.model,
-          endpoint: endpointHost,
-        });
-        stream = await doCreate(null);
-      } else {
+  // Pembuatan request dengan fallback berlapis agar model reasoning
+  // (o1/o3/gpt-5, Gemini thinking, DeepSeek-R1, QwQ, ...) tetap jalan:
+  //  1. coba sesuai permintaan (temperature + reasoning_effort + max_tokens);
+  //  2. bila 400 menyebut temperature → ulangi tanpa temperature;
+  //  3. bila 400 menyebut reasoning → ulangi tanpa reasoning_effort;
+  //  4. bila 400 menyebut max_tokens → ulangi dengan max_completion_tokens.
+  // Urutan 2-4 bisa kombinasi; tiap fallback dicoba maksimal sekali.
+  const doCreate = (temperature: number | null, reasoningEffort: string | null, useCompletionTokens: boolean) =>
+    client.chat.completions.create({
+      model: cfg.model,
+      messages: wireMessages as never,
+      tools: wireTools.length ? wireTools : undefined,
+      ...(useCompletionTokens ? { max_completion_tokens: input.maxTokens } : { max_tokens: input.maxTokens }),
+      ...(temperature !== null ? { temperature } : {}),
+      // reasoning_effort (low/medium/high): didukung model reasoning
+      // OpenAI o-series/gpt-5, Gemini thinking via OpenAI-compat, dan
+      // DeepSeek/Qwen via OpenRouter. SDK versi lama belum mengetiknya —
+      // cast aman karena provider yang tak kenal akan 400 lalu di-fallback.
+      ...(reasoningEffort !== null ? { reasoning_effort: reasoningEffort } : {}),
+      stream: true,
+      stream_options: { include_usage: true },
+    } as never, { signal: input.signal });
+  const attemptCreate = async (): Promise<Awaited<ReturnType<typeof doCreate>>> => {
+    let temperature = ctx.temperature;
+    let reasoning: string | null = ctx.reasoningEffort;
+    let useCompletionTokens = false;
+    for (;;) {
+      try {
+        return await doCreate(temperature, reasoning, useCompletionTokens);
+      } catch (err) {
+        if (temperature !== null && isTemperatureRejection(err)) {
+          logger.warn("provider rejected temperature param; retrying without it", {
+            provider: cfg.kind,
+            model: cfg.model,
+            endpoint: endpointHost,
+          });
+          temperature = null;
+          continue;
+        }
+        if (reasoning !== null && isReasoningRejection(err)) {
+          logger.warn("provider rejected reasoning_effort param; retrying without it", {
+            provider: cfg.kind,
+            model: cfg.model,
+            endpoint: endpointHost,
+          });
+          reasoning = null;
+          continue;
+        }
+        if (!useCompletionTokens && isMaxTokensRejection(err)) {
+          logger.warn("provider rejected max_tokens param; retrying with max_completion_tokens", {
+            provider: cfg.kind,
+            model: cfg.model,
+            endpoint: endpointHost,
+          });
+          useCompletionTokens = true;
+          continue;
+        }
         throw err;
       }
     }
+  };
+  try {
+    const stream = await attemptCreate();
     return { stream: stream as unknown as AsyncIterable<SdkChunk> };
   } catch (err) {
     const mapped = handleProviderFailure(failureCtx, err, { attempt, maxRetries });

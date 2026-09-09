@@ -63,3 +63,12 @@ export type {
   OperationLogDTO,
   RiskLevel,
 } from "./schemas/approval";
+export {
+  REASONING_EFFORTS,
+  RUN_REASONING_VALUES,
+  normalizeReasoningEffort,
+  reasoningEffortHint,
+  reasoningEffortLabel,
+  supportsReasoning,
+} from "./reasoning";
+export type { ReasoningEffort, RunReasoningValue } from "./reasoning";

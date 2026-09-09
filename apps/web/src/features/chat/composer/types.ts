@@ -16,7 +16,7 @@ export interface ChatComposerProps {
   onClearExternalText?: () => void;
   onPickFile: (file: File) => void;
   onRemoveAttachment: (id: string) => void;
-  onSend: (text: string, attachmentIds: string[], model?: string, providerId?: string) => void;
+  onSend: (text: string, attachmentIds: string[], model?: string, providerId?: string, reasoningEffort?: string) => void;
   onCancel: () => void;
   onAddRouter?: () => void;
   onCompact?: () => void;
