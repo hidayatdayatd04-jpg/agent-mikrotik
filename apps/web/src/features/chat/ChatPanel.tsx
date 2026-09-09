@@ -1,35 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { ThinkingLogo } from "./ThinkingLogo";
-import { extractAskBlocks, stripAskBlocks } from "./ask-card";
-import { AskCard } from "./AskCard";
-import { extractApprovalBlocks, stripApprovalBlocks } from "./approval-card";
-import { ApprovalCard } from "./ApprovalCard";
-import { Markdown } from "./Markdown";
 import { Button } from "@/components/ui/button";
-import {
-  Check,
-  Copy,
-  ArrowDown,
-  User,
-  FileText,
-  Pencil,
-  RotateCcw,
-  Send,
-  X,
-} from "@/components/icons";
+import { ArrowDown } from "@/components/icons";
 import type { MessageDTO, ActivityEventDTO, RunEventDTO } from "./chat-hooks";
-import { buildRunTimeline } from "./run-timeline";
-import { useSmoothText } from "./use-smooth-text";
-import {
-  RunPipeline,
-  CompactionNotice,
-  buildPipeline,
-  humanizeTool,
-  isCompactionEvent,
-  isManualTerminalEvent,
-  ResearchCard,
-  type PipelineStep,
-} from "./ToolActivity";
+import { useChatScroll } from "./use-chat-scroll";
+import { useChatRows } from "./use-chat-rows";
+import { useMessageEditing } from "./editing";
+import { MessageItem } from "./message-item";
+import { LiveTurn } from "./live-turn";
 import { EmptyChatState } from "./EmptyChatState";
 
 export interface ToolActivity {
@@ -38,105 +14,8 @@ export interface ToolActivity {
   status: "running" | "done" | "failed";
 }
 
-function CopyButton({ getText, label = "Salin" }: { getText: () => string; label?: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <Button
-      variant="ghost"
-      size="sm"
-      className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/80 gap-1.5 rounded-md transition-colors"
-      aria-label="Salin teks"
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(getText());
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        } catch {
-          /* clipboard unavailable */
-        }
-      }}
-    >
-      {copied ? (
-        <>
-          <Check className="size-3.5 text-emerald-500" aria-hidden />
-          <span className="text-emerald-500 font-medium">Tersalin!</span>
-        </>
-      ) : (
-        <>
-          <Copy className="size-3.5" aria-hidden />
-          <span>{label}</span>
-        </>
-      )}
-    </Button>
-  );
-}
-
 export { Markdown } from "./Markdown";
-
-export function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function AssistantBody({
-  text,
-  onAnswerAsk,
-  onSendToTerminal,
-  activeConnectionId,
-  conversationId,
-}: {
-  text: string;
-  onAnswerAsk?: (label: string) => void;
-  onSendToTerminal?: (code: string) => void;
-  activeConnectionId?: string | null;
-  conversationId?: string | null;
-}) {
-  const specs = onAnswerAsk ? extractAskBlocks(text) : null;
-  const approvalSpecs = extractApprovalBlocks(text);
-  let body = text;
-  if (specs) body = stripAskBlocks(body);
-  if (approvalSpecs) body = stripApprovalBlocks(body);
-  return (
-    <>
-      {body && <Markdown text={body} onSendToTerminal={onSendToTerminal} />}
-      {approvalSpecs &&
-        approvalSpecs.map((spec, i) => (
-          <ApprovalCard
-            key={i}
-            spec={spec}
-            activeConnectionId={activeConnectionId}
-            conversationId={conversationId}
-          />
-        ))}
-      {specs && onAnswerAsk
-        ? specs.map((spec, i) => (
-            <AskCard key={i} spec={spec} onAnswer={onAnswerAsk} />
-          ))
-        : null}
-    </>
-  );
-}
-
-function LiveTextBlock({
-  text,
-  isLatest,
-  live,
-  onSendToTerminal,
-}: {
-  text: string;
-  isLatest: boolean;
-  live: boolean;
-  onSendToTerminal?: (code: string) => void;
-}) {
-  const { displayedText } = useSmoothText(text, live && isLatest);
-  const clean = stripApprovalBlocks(stripAskBlocks(displayedText));
-  return (
-    <div className="relative">
-      {clean ? <Markdown text={clean} onSendToTerminal={onSendToTerminal} /> : null}
-    </div>
-  );
-}
+export { fmtSize } from "./format-size";
 
 export function ChatPanel(props: {
   messages: MessageDTO[];
@@ -154,41 +33,20 @@ export function ChatPanel(props: {
   activeConnectionId?: string | null;
   conversationId?: string | null;
 }) {
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const nearBottomRef = useRef(true);
-  const [showJump, setShowJump] = useState(false);
-  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const [editingContent, setEditingContent] = useState<string>("");
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const near = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
-      nearBottomRef.current = near;
-      setShowJump(!near);
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
-
-  useEffect(() => {
-    if (nearBottomRef.current) {
-      const reduced = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-      bottomRef.current?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "end" });
-    }
-  }, [props.messages.length, props.streamText, props.toolActivity.length, props.runLive, props.persistedActivities?.length]);
-
-  function startEdit(id: string, text: string) {
-    setEditingMessageId(id);
-    setEditingContent(text);
-  }
+  const scroll = useChatScroll(
+    props.messages.length,
+    props.streamText,
+    props.toolActivity.length,
+    props.runLive,
+    props.persistedActivities?.length,
+  );
+  const edit = useMessageEditing();
+  const { rows, byRun, liveSteps } = useChatRows(props.messages, props.persistedActivities ?? [], props.toolActivity);
 
   function submitEdit() {
-    const trimmed = editingContent.trim();
+    const trimmed = edit.editingContent.trim();
     if (!trimmed) return;
-    setEditingMessageId(null);
+    edit.cancelEdit();
     if (props.onResendPrompt) {
       props.onResendPrompt(trimmed);
     }
@@ -196,63 +54,14 @@ export function ChatPanel(props: {
 
   const showEmpty = props.messages.length === 0 && !props.runLive && !props.streamText;
 
-  // Group persisted run events by runId. Manual terminal sessions (no runId)
-  // belong to the terminal panel, never to an AI pipeline. Compaction notices
-  // render as standalone system rows interleaved by time.
-  const persisted = props.persistedActivities ?? [];
-  const byRun = new Map<string, ActivityEventDTO[]>();
-  for (const ev of persisted) {
-    if (ev.type === "run.started" || isManualTerminalEvent(ev) || isCompactionEvent(ev)) continue;
-    if (!ev.runId) continue;
-    const arr = byRun.get(ev.runId);
-    if (arr) arr.push(ev);
-    else byRun.set(ev.runId, [ev]);
-  }
-  const compactions = persisted
-    .filter((ev) => isCompactionEvent(ev))
-    .slice()
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-
-  type Row = { kind: "message"; m: MessageDTO } | { kind: "compaction"; ev: ActivityEventDTO };
-  const rows: Row[] = [];
-  let ci = 0;
-  for (const m of props.messages) {
-    while (ci < compactions.length && compactions[ci]!.createdAt <= m.createdAt) {
-      rows.push({ kind: "compaction", ev: compactions[ci]! });
-      ci += 1;
-    }
-    rows.push({ kind: "message", m });
-  }
-  while (ci < compactions.length) {
-    rows.push({ kind: "compaction", ev: compactions[ci]! });
-    ci += 1;
-  }
-
-  // Deep Research (web:) punya kartu hasil sendiri — bukan step pipeline live.
-  const liveSteps: PipelineStep[] = props.toolActivity
-    .filter((t) => !t.name.startsWith("web:"))
-    .map((t, i) => ({
-    key: t.id ?? `live-${i}`,
-    index: i + 1,
-    label: humanizeTool(t.name),
-    tool: t.name,
-    status: t.status === "done" ? "completed" : t.status,
-    durationMs: null,
-  }));
-
   return (
     <div className="relative flex h-full flex-col">
-      {showJump && (
+      {scroll.showJump && (
         <Button
           variant="outline"
           size="sm"
           className="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 gap-1.5 rounded-full border-border/80 bg-card/90 px-4 shadow-lg backdrop-blur-md hover:bg-card"
-          onClick={() => {
-            nearBottomRef.current = true;
-            setShowJump(false);
-            const reduced = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-            bottomRef.current?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "end" });
-          }}
+          onClick={scroll.jumpToLatest}
           aria-label="Lompat ke pesan terbaru"
         >
           <ArrowDown className="size-3.5 text-indigo-500" />
@@ -260,271 +69,43 @@ export function ChatPanel(props: {
         </Button>
       )}
 
-      <div ref={containerRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
+      <div ref={scroll.containerRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
         <div className="mx-auto flex max-w-[850px] flex-col gap-6">
           {showEmpty && <EmptyChatState />}
 
-          {rows.map((row) => {
-            if (row.kind === "compaction") {
-              return <CompactionNotice key={row.ev.id} event={row.ev} />;
-            }
-            const m = row.m;
-            const isUser = m.role === "user";
-            const isEditingThis = editingMessageId === m.id;
-            const runActs = !isUser && m.content.runId ? byRun.get(m.content.runId) : undefined;
-            const pipeline = runActs && runActs.length > 0 ? buildPipeline(runActs) : null;
-            const showPipeline = !!pipeline && pipeline.steps.length > 0;
-            const timeline = m.content.timeline?.length ? buildRunTimeline(m.content.timeline) : null;
-            // Status run keseluruhan: pipeline tool yang selesai tidak boleh
-            // berlabel "Selesai" bila jawaban akhirnya gagal/dibatalkan.
-            const overall = m.status === "failed" ? "failed" as const : m.status === "cancelled" ? "cancelled" as const : null;
+          {rows.map((row) => (
+            <MessageItem
+              key={row.kind === "message" ? row.m.id : row.ev.id}
+              row={row}
+              messages={props.messages}
+              byRun={byRun}
+              isEditing={row.kind === "message" && edit.editingMessageId === row.m.id}
+              editingContent={edit.editingContent}
+              onEditingChange={edit.setEditingContent}
+              onStartEdit={(m) => edit.startEdit(m.id, m.content.text ?? "")}
+              onCancelEdit={edit.cancelEdit}
+              onSubmitEdit={submitEdit}
+              onAnswerAsk={props.onAnswerAsk}
+              onSendToTerminal={props.onSendToTerminal}
+              onResendPrompt={props.onResendPrompt}
+              activeConnectionId={props.activeConnectionId}
+              conversationId={props.conversationId}
+            />
+          ))}
 
-            return (
-              <div
-                key={m.id}
-                className={`group flex gap-3 animate-in fade-in duration-200 ${
-                  isUser ? "justify-end" : "justify-start"
-                }`}
-              >
-                {!isUser && (
-                  <div className="flex size-9 shrink-0 select-none items-center justify-center rounded-xl overflow-hidden ring-1 ring-cyan-500/30 bg-card shadow-xs">
-                    <img
-                      src="/logo.png"
-                      alt="MikroTik AI"
-                      className="size-full object-contain p-0.5"
-                    />
-                  </div>
-                )}
+          <LiveTurn
+            runLive={props.runLive}
+            streamText={props.streamText}
+            liveEvents={props.liveEvents}
+            liveSteps={liveSteps}
+            queueStatus={props.queueStatus}
+            txStatus={props.txStatus}
+            onSendToTerminal={props.onSendToTerminal}
+          />
 
-                <div className="max-w-[85%] sm:max-w-[80%] space-y-1">
-                  {isUser ? (
-                    <div>
-                      {isEditingThis ? (
-                        <div className="rounded-2xl border border-indigo-500/80 bg-card p-3 shadow-md space-y-2">
-                          <textarea
-                            value={editingContent}
-                            onChange={(e) => setEditingContent(e.target.value)}
-                            className="w-full min-h-[70px] resize-none bg-transparent p-1 text-sm outline-none text-foreground"
-                            autoFocus
-                          />
-                          <div className="flex items-center justify-end gap-2 pt-1 border-t border-border/60">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 text-xs"
-                              onClick={() => setEditingMessageId(null)}
-                            >
-                              <X className="size-3 mr-1" /> Batal
-                            </Button>
-                            <Button
-                              size="sm"
-                              className="h-7 text-xs bg-indigo-600 hover:bg-indigo-500 text-white gap-1"
-                              onClick={submitEdit}
-                              disabled={!editingContent.trim()}
-                            >
-                              <Send className="size-3" /> Kirim Ulang
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="rounded-2xl rounded-tr-xs bg-indigo-600 px-4 py-3 text-white shadow-sm">
-                          <p className="whitespace-pre-wrap text-sm leading-relaxed font-normal">
-                            {m.content.text}
-                          </p>
-                          {m.content.attachments && m.content.attachments.length > 0 && (
-                            <div className="mt-2.5 flex flex-wrap gap-1.5">
-                              {m.content.attachments.map((a) => (
-                                <span
-                                  key={a.id}
-                                  className="flex items-center gap-1 rounded-md bg-white/20 px-2.5 py-0.5 text-xs text-white"
-                                >
-                                  <FileText className="size-3" />
-                                  {a.name}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {!isEditingThis && (
-                        <div className="mt-1 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <CopyButton getText={() => m.content.text ?? ""} label="Salin" />
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/80 gap-1 rounded-md transition-colors"
-                            onClick={() => startEdit(m.id, m.content.text ?? "")}
-                            title="Edit pesan ini"
-                          >
-                            <Pencil className="size-3" />
-                            <span>Edit</span>
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div>
-                      <div className="rounded-2xl rounded-tl-xs border border-border/70 bg-card/80 px-4 py-3.5 shadow-xs">
-                        {m.content.attachments && m.content.attachments.length > 0 && (
-                          <div className="mb-2.5 flex flex-wrap gap-1">
-                            {m.content.attachments.map((a) => (
-                              <span
-                                key={a.id}
-                                className="flex items-center gap-1 rounded-md border border-border/80 bg-muted px-2 py-0.5 text-xs text-muted-foreground"
-                              >
-                                <FileText className="size-3 text-cyan-500" />
-                                {a.name}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-
-                        {timeline ? timeline.map((block) => (
-                          <div key={block.key} className="my-2 first:mt-0 last:mb-0">
-                            {block.kind === "text" ? (
-                              <AssistantBody
-                                text={block.text}
-                                onAnswerAsk={props.onAnswerAsk}
-                                onSendToTerminal={props.onSendToTerminal}
-                                activeConnectionId={props.activeConnectionId}
-                                conversationId={props.conversationId}
-                              />
-                            ) : block.kind === "research" ? (
-                              <ResearchCard research={block.research} status={block.status} />
-                            ) : (
-                              <RunPipeline steps={block.steps ?? [block.step]} defaultOpen={false} overall={overall} />
-                            )}
-                          </div>
-                        )) : <>
-                        {showPipeline && <div className="mb-3"><RunPipeline steps={pipeline!.steps} tx={pipeline!.tx} defaultOpen={false} overall={overall} /></div>}
-                        {m.content.text ? (
-                          <AssistantBody
-                            text={m.content.text}
-                            onAnswerAsk={props.onAnswerAsk}
-                            onSendToTerminal={props.onSendToTerminal}
-                            activeConnectionId={props.activeConnectionId}
-                            conversationId={props.conversationId}
-                          />
-                        ) : (
-                          <span className="text-xs text-muted-foreground">{m.status === "cancelled" ? "Jawaban dihentikan." : "Tidak ada teks jawaban."}</span>
-                        )}
-                        </>}
-
-                        {m.status && m.status !== "complete" && m.status !== "completed" && (
-                          <p className="mt-1 text-[11px] text-muted-foreground/80">
-                            Status: {m.status === "failed" ? "Gagal" : m.status === "cancelled" ? "Dibatalkan" : m.status}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="mt-1 flex flex-wrap items-center justify-start gap-2 text-[11px] text-muted-foreground">
-                        {m.content.text && <CopyButton getText={() => m.content.text ?? ""} label="Salin Jawaban" />}
-                        {props.onResendPrompt && m.status !== "failed" && m.status !== "cancelled" && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/80 gap-1 rounded-md transition-colors"
-                            onClick={() => {
-                              const idx = props.messages.findIndex((msg) => msg.id === m.id);
-                              if (idx > 0 && props.messages[idx - 1]?.content.text) {
-                                props.onResendPrompt?.(props.messages[idx - 1]!.content.text!);
-                              }
-                            }}
-                            title="Kirim ulang pertanyaan ini"
-                          >
-                            <RotateCcw className="size-3" />
-                            <span>Regenerate</span>
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {isUser && (
-                  <div className="flex size-8 shrink-0 select-none items-center justify-center rounded-xl bg-muted text-muted-foreground shadow-xs border border-border/60">
-                    <User className="size-4" />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {/* Live in-flight assistant turn */}
-          {props.runLive && (props.streamText || props.liveEvents?.some((e) => e.type.startsWith("tool.")) || liveSteps.length > 0) && (
-            <div className="flex gap-3 justify-start animate-in fade-in duration-200">
-              <div className="flex size-9 shrink-0 select-none items-center justify-center rounded-xl overflow-hidden ring-1 ring-cyan-500/40 bg-card shadow-xs">
-                <img src="/logo.png" alt="MikroTik AI" className="size-full object-contain p-0.5" />
-              </div>
-              <div className="max-w-[85%] sm:max-w-[80%] rounded-2xl rounded-tl-xs border border-border/70 bg-card/80 px-4 py-3.5 shadow-xs">
-                {props.liveEvents?.length ? (
-                  (() => {
-                    const blocks = buildRunTimeline(props.liveEvents, true);
-                    // Streaming halus diterapkan ke blok TEKS terbaru (bukan blok
-                    // terakhir apa pun) — kartu research di antara teks tidak
-                    // boleh mematikan animasi ketik pada teks yang mengikuti.
-                    const lastTextIdx = blocks.reduce((acc, b, i) => (b.kind === "text" ? i : acc), -1);
-                    return blocks.map((block, idx) => {
-                      return (
-                        <div key={block.key} className="my-2 first:mt-0 last:mb-0">
-                          {block.kind === "text" ? (
-                            <LiveTextBlock
-                              text={block.text}
-                              isLatest={idx === lastTextIdx}
-                              live={props.runLive}
-                              onSendToTerminal={props.onSendToTerminal}
-                            />
-                          ) : block.kind === "research" ? (
-                            <ResearchCard research={block.research} status={block.status} />
-                          ) : (
-                            <RunPipeline
-                              steps={block.steps ?? [block.step]}
-                              defaultOpen={false}
-                              live={(block.steps ?? [block.step]).some((s) => s.status === "running")}
-                            />
-                          )}
-                        </div>
-                      );
-                    });
-                  })()
-                ) : (
-                  <>
-                    {liveSteps.length > 0 && (
-                      <div className="mb-2">
-                        <RunPipeline steps={liveSteps} defaultOpen={false} live />
-                      </div>
-                    )}
-                    {props.streamText ? (
-                      <LiveTextBlock
-                        text={props.streamText}
-                        isLatest={true}
-                        live={props.runLive}
-                        onSendToTerminal={props.onSendToTerminal}
-                      />
-                    ) : null}
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-
-          {props.runLive && !props.streamText && !props.liveEvents?.some((e) => e.type.startsWith("tool.")) && liveSteps.length === 0 && (
-            <div className="py-3" role="status" aria-live="polite">
-              <ThinkingLogo />
-              {(props.queueStatus || props.txStatus) && (
-                <p className="mt-1 text-center text-[11px] text-muted-foreground">
-                  {props.queueStatus ?? props.txStatus}
-                </p>
-              )}
-            </div>
-          )}
-
-          <div ref={bottomRef} />
+          <div ref={scroll.bottomRef} />
         </div>
       </div>
-
-
     </div>
   );
 }

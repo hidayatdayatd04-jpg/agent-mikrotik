@@ -1,7 +1,7 @@
-import { useState, useMemo } from "react";
 import { Check, MessageCircleQuestion, Send } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { isOptionRecommended, type AskSpec } from "./ask-card";
+import { useAskCard } from "./use-ask-card";
 
 /**
  * Interactive Q&A pop-up card. Each question offers tappable options.
@@ -13,56 +13,18 @@ import { isOptionRecommended, type AskSpec } from "./ask-card";
  * a "Terapkan Rekomendasi" button auto-selects all recommended options in one click.
  */
 export function AskCard({ spec, onAnswer }: { spec: AskSpec; onAnswer: (label: string) => void }) {
-  const [selected, setSelected] = useState<Record<string, { optionId: string; label: string }>>({});
-  const [submitted, setSubmitted] = useState(false);
-
-  const totalQuestions = spec.questions.length;
-  const answeredCount = Object.keys(selected).length;
-  const allAnswered = answeredCount === totalQuestions;
-
-  // Check if any question has a recommended option
-  const hasRecommended = useMemo(
-    () => spec.questions.some((q) => q.options.some(isOptionRecommended)),
-    [spec.questions],
-  );
-
-  // Check if all questions that have a recommendation currently have it selected
-  const allRecommendedSelected = useMemo(() => {
-    if (!hasRecommended) return false;
-    return spec.questions.every((q) => {
-      const rec = q.options.find(isOptionRecommended);
-      return !rec || selected[q.id]?.optionId === rec.id;
-    });
-  }, [spec.questions, selected, hasRecommended]);
-
-  function choose(questionId: string, optionId: string, label: string) {
-    if (submitted) return;
-    setSelected((prev) => ({ ...prev, [questionId]: { optionId, label } }));
-  }
-
-  function applyRecommended() {
-    if (submitted) return;
-    const next: Record<string, { optionId: string; label: string }> = { ...selected };
-    for (const q of spec.questions) {
-      const rec = q.options.find(isOptionRecommended);
-      if (rec) {
-        next[q.id] = { optionId: rec.id, label: rec.label };
-      }
-    }
-    setSelected(next);
-  }
-
-  function handleSubmit() {
-    if (!allAnswered || submitted) return;
-    setSubmitted(true);
-    // Combine all answers into one message
-    const parts = spec.questions.map((q, i) => {
-      const answer = selected[q.id];
-      if (totalQuestions === 1) return answer?.label ?? "";
-      return `${i + 1}. ${answer?.label}`;
-    });
-    onAnswer(parts.join("\n"));
-  }
+  const {
+    selected,
+    submitted,
+    totalQuestions,
+    answeredCount,
+    allAnswered,
+    hasRecommended,
+    allRecommendedSelected,
+    choose,
+    applyRecommended,
+    handleSubmit,
+  } = useAskCard(spec, onAnswer);
 
   return (
     <div className="my-3 overflow-hidden rounded-xl border border-indigo-500/40 bg-indigo-500/5 shadow-xs" role="group" aria-label="Pertanyaan dari AI">

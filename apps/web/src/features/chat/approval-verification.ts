@@ -3,58 +3,16 @@
  * natural human narratives directly beneath the approval card in the same chat output.
  */
 
-export function extractRouterOsNames(output: string): string[] {
-  if (!output) return [];
-  const lines = output.split(/\r?\n/);
-  const names: string[] = [];
+import { extractRouterOsNames } from "./verification-names";
+import {
+  buildVlanNarrative,
+  buildInterfaceNarrative,
+  buildAddressNarrative,
+  buildFirewallNarrative,
+  buildFallbackNarrative,
+} from "./verification-narratives";
 
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    // Skip banner or header lines
-    if (/^(flags|#|\*|columns|total)/i.test(line)) continue;
-    if (
-      line.includes("NAME") &&
-      (line.includes("INTERFACE") ||
-        line.includes("MTU") ||
-        line.includes("VLAN-ID") ||
-        line.includes("ADDRESS") ||
-        line.includes("DISABLED"))
-    ) {
-      continue;
-    }
-
-    // Pattern 1: name="xxx" or name=xxx
-    const nameAttrMatch = line.match(/\bname="?([^"\s;]+)"?/i);
-    if (nameAttrMatch && nameAttrMatch[1]) {
-      const n = nameAttrMatch[1].trim();
-      if (n && !names.includes(n)) names.push(n);
-      continue;
-    }
-
-    // Pattern 2: Tabular line starting with row number: e.g. "0 R vlan30-guest 1500 ..."
-    const tabMatch = line.match(/^\d+\s*(?:[A-Za-z*]+\s+)?([a-zA-Z0-9_.-]+)/);
-    if (tabMatch && tabMatch[1]) {
-      const candidate = tabMatch[1].trim();
-      if (
-        !/^\d+$/.test(candidate) &&
-        !["R", "X", "D", "I", "S", "A", "B"].includes(candidate.toUpperCase())
-      ) {
-        if (!names.includes(candidate)) names.push(candidate);
-      }
-    }
-  }
-
-  return names;
-}
-
-export function formatItemNames(items: string[]): string {
-  if (items.length === 0) return "";
-  const codeItems = items.map((i) => `\`${i}\``);
-  if (codeItems.length === 1) return codeItems[0]!;
-  if (codeItems.length === 2) return `${codeItems[0]} dan ${codeItems[1]}`;
-  return `${codeItems.slice(0, -1).join(", ")}, dan ${codeItems[codeItems.length - 1]}`;
-}
+export { extractRouterOsNames, formatItemNames } from "./verification-names";
 
 export function getVerificationToolLabel(pathOrCmd: string): string {
   const lower = pathOrCmd.toLowerCase();
@@ -105,9 +63,7 @@ export function generateVerificationDetails(input: VerificationDetailsInput): Ve
     }
   }
 
-  const command =
-    input.command ||
-    (verifyLog ? verifyLog.command.replace("[VERIFIKASI] ", "") : deducedCmd);
+  const command = input.command || (verifyLog ? verifyLog.command.replace("[VERIFIKASI] ", "") : deducedCmd);
   const output = input.output ?? (verifyLog ? verifyLog.output ?? "" : "");
   const durationMs = input.durationMs ?? (verifyLog?.durationMs ?? 12);
 
@@ -126,35 +82,17 @@ export function generateVerificationDetails(input: VerificationDetailsInput): Ve
 
   const lowerSum = summary.toLowerCase();
   const isVlan =
-    command.toLowerCase().includes("vlan") ||
-    lowerSum.includes("vlan") ||
-    operations.some((o) => o.command.toLowerCase().includes("vlan"));
-  const isInterface =
-    isVlan ||
-    command.toLowerCase().includes("interface") ||
-    lowerSum.includes("interface");
+    command.toLowerCase().includes("vlan") || lowerSum.includes("vlan") || operations.some((o) => o.command.toLowerCase().includes("vlan"));
+  const isInterface = isVlan || command.toLowerCase().includes("interface") || lowerSum.includes("interface");
   const isAddress =
-    command.toLowerCase().includes("address") ||
-    lowerSum.includes("ip address") ||
-    lowerSum.includes("alamat ip");
+    command.toLowerCase().includes("address") || lowerSum.includes("ip address") || lowerSum.includes("alamat ip");
   const isFirewall =
-    command.toLowerCase().includes("firewall") ||
-    lowerSum.includes("firewall") ||
-    lowerSum.includes("filter") ||
-    lowerSum.includes("nat");
+    command.toLowerCase().includes("firewall") || lowerSum.includes("firewall") || lowerSum.includes("filter") || lowerSum.includes("nat");
 
-  const isRemove =
-    operations.some((o) => /remove|delete/i.test(o.command)) ||
-    /hapus|delete|remove/i.test(summary);
-  const isAdd =
-    operations.some((o) => /add|create/i.test(o.command)) ||
-    /buat|tambah|add/i.test(summary);
-  const isDisable =
-    operations.some((o) => /disable/i.test(o.command)) ||
-    /nonaktif|disable/i.test(summary);
-  const isEnable =
-    operations.some((o) => /enable/i.test(o.command)) ||
-    /aktifkan|enable/i.test(summary);
+  const isRemove = operations.some((o) => /remove|delete/i.test(o.command)) || /hapus|delete|remove/i.test(summary);
+  const isAdd = operations.some((o) => /add|create/i.test(o.command)) || /buat|tambah|add/i.test(summary);
+  const isDisable = operations.some((o) => /disable/i.test(o.command)) || /nonaktif|disable/i.test(summary);
+  const isEnable = operations.some((o) => /enable/i.test(o.command)) || /aktifkan|enable/i.test(summary);
 
   // Extract target names
   const targets: string[] = [];
@@ -184,81 +122,28 @@ export function generateVerificationDetails(input: VerificationDetailsInput): Ve
   }
 
   const activeNames = extractRouterOsNames(output);
+  const flags = { isRemove, isAdd, isDisable, isEnable };
 
   // Case 1: VLAN
   if (isVlan) {
-    let narrative =
-      "Saya telah memverifikasi status interface VLAN di router setelah perubahan diterapkan.\n\n";
-    if (isRemove) {
-      const targetStr = targets.length > 0 ? formatItemNames(targets) : "target VLAN";
-      narrative += `Berdasarkan hasil pembacaan langsung dari router, interface ${targetStr} sudah berhasil dihapus dari daftar interface.`;
-      if (activeNames.length > 0) {
-        narrative += ` Saat ini interface VLAN yang aktif tersisa adalah ${formatItemNames(activeNames)}.`;
-      }
-    } else if (isAdd) {
-      const targetStr = targets.length > 0 ? formatItemNames(targets) : "VLAN";
-      narrative += `Berdasarkan hasil pembacaan langsung dari router, interface ${targetStr} sudah berhasil dibuat dan berstatus aktif pada router.`;
-    } else if (isDisable) {
-      const targetStr = targets.length > 0 ? formatItemNames(targets) : "VLAN";
-      narrative += `Berdasarkan hasil pembacaan langsung dari router, interface ${targetStr} sudah berhasil dinonaktifkan.`;
-    } else if (isEnable) {
-      const targetStr = targets.length > 0 ? formatItemNames(targets) : "VLAN";
-      narrative += `Berdasarkan hasil pembacaan langsung dari router, interface ${targetStr} sudah berhasil diaktifkan dan berstatus aktif pada router.`;
-    } else {
-      narrative += `Berdasarkan hasil pembacaan langsung dari router, konfigurasi interface VLAN telah berhasil diperbarui dan diterapkan ke router.`;
-    }
-    return { toolLabel, narrative, durationMs, command, output };
+    return { toolLabel, narrative: buildVlanNarrative(flags, targets, activeNames), durationMs, command, output };
   }
 
   // Case 2: General Interface
   if (isInterface) {
-    let narrative =
-      "Saya telah memverifikasi status interface di router setelah perubahan diterapkan.\n\n";
-    if (isRemove) {
-      const targetStr = targets.length > 0 ? formatItemNames(targets) : "target interface";
-      narrative += `Berdasarkan hasil pembacaan langsung dari router, interface ${targetStr} sudah berhasil dihapus dari daftar interface.`;
-    } else if (isDisable) {
-      const targetStr = targets.length > 0 ? formatItemNames(targets) : "interface";
-      narrative += `Berdasarkan hasil pembacaan langsung dari router, interface ${targetStr} sudah berhasil dinonaktifkan.`;
-    } else if (isEnable) {
-      const targetStr = targets.length > 0 ? formatItemNames(targets) : "interface";
-      narrative += `Berdasarkan hasil pembacaan langsung dari router, interface ${targetStr} sudah berhasil diaktifkan dan berstatus aktif pada router.`;
-    } else {
-      const targetStr = targets.length > 0 ? formatItemNames(targets) : "interface";
-      narrative += `Berdasarkan hasil pembacaan langsung dari router, interface ${targetStr} sudah berhasil diterapkan dan berstatus aktif pada router.`;
-    }
-    return { toolLabel, narrative, durationMs, command, output };
+    return { toolLabel, narrative: buildInterfaceNarrative(flags, targets), durationMs, command, output };
   }
 
   // Case 3: IP Address
   if (isAddress) {
-    const targetStr = targets.length > 0 ? formatItemNames(targets) : "";
-    return {
-      toolLabel,
-      narrative: `Saya telah memverifikasi status IP address di router setelah perubahan diterapkan.\n\nBerdasarkan hasil pembacaan langsung dari router, konfigurasi IP address ${targetStr ? `${targetStr} ` : ""}sudah berhasil diterapkan dan aktif pada router.`,
-      durationMs,
-      command,
-      output,
-    };
+    return { toolLabel, narrative: buildAddressNarrative(targets), durationMs, command, output };
   }
 
   // Case 4: Firewall
   if (isFirewall) {
-    return {
-      toolLabel,
-      narrative: `Saya telah memverifikasi aturan firewall di router setelah perubahan diterapkan.\n\nBerdasarkan hasil pembacaan langsung dari router, aturan firewall sudah berhasil diterapkan dan aktif pada tabel konfigurasi router.`,
-      durationMs,
-      command,
-      output,
-    };
+    return { toolLabel, narrative: buildFirewallNarrative(), durationMs, command, output };
   }
 
   // Fallback
-  return {
-    toolLabel,
-    narrative: `Saya telah memverifikasi status konfigurasi di router setelah perubahan diterapkan.\n\nBerdasarkan hasil pembacaan langsung dari router, perubahan konfigurasi "${summary}" sudah berhasil diterapkan dan terverifikasi aktif.`,
-    durationMs,
-    command,
-    output,
-  };
+  return { toolLabel, narrative: buildFallbackNarrative(summary), durationMs, command, output };
 }
